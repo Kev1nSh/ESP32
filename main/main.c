@@ -25,9 +25,13 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include <nvs_flash.h>
-#include "driver/adc.h"
-#include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_continuous.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc_cal.h"
+#include "driver/gpio.h"
+
+
 /*
 #include "esp_nimble_hci.h"
 #include "nimble/nimble_port.h"
@@ -50,7 +54,36 @@ static const char *TAG2 = "TCP_Client";
 
 static const char *payload = "Message from ESP32";
 
-void tcp_client(void)
+void init_led();
+void turn_on_led();
+void turn_off_led();
+void tcp_client(void *pvParameters);
+int read_photo_sensor();
+void wifi_connect();
+
+void app_main(void)
+{
+
+    init_led();
+
+    // Initilize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+
+
+    wifi_connect(); 
+
+    xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
+
+}
+
+
+void tcp_client(void *pvParameters)
 {
 
     char rx_buffer[20];
@@ -214,19 +247,33 @@ int read_photo_sensor()
 {
 
     //Configure ADC
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_0); // Asumption that the photo sensor is connected to GPIO 36/adc1_channel_0
+    adc_oneshot_unit_handle_t adc1_handle;
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
     
-    //Read ADC value
-    int adc_value = adc1_get_raw(ADC1_CHANNEL_0);
-    return adc_value;
+    adc_oneshot_new_unit(&init_config1, &adc1_handle);
+
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN_DB_0,
+    };
+
+    adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL_0, &config);
+
+    int adc_raw;
+    adc_oneshot_read(adc1_handle, ADC_CHANNEL_0, &adc_raw);
+
+    adc_oneshot_del_unit(adc1_handle);
+
+    return adc_raw;
 
 }
 
 
 void init_led()
 {
-    gpio_pad_select_gpio(LED_PIN);
+    gpio_reset_pin(LED_PIN);
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
 }
 
@@ -238,22 +285,4 @@ void turn_on_led()
 void turn_off_led()
 {
     gpio_set_level(LED_PIN, 0);
-}
-
-void app_main(void)
-{
-
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    init_led();
-
-    wifi_connect(); 
-
-    xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
-
 }
