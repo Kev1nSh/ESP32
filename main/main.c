@@ -38,6 +38,7 @@
 #include "esp_bt_defs.h"
 #include "esp_bt_device.h"
 #include "esp_bt_defs.h"
+#include "esp_err.h"
 
 
 
@@ -46,20 +47,12 @@
 #define PORT 1256
 #define SERVER_IP "192.168.1.100"
 
-#define GATTS_SERVICE_UUID_TEST_A 0x00FF
-#define GATTS_CHAR_UUID_TEST_A 0xFF01
-#define GATTS_DESCR_UUID_TEST_A 0x3333
-#define GATTS_NUM_HANDLE_TEST_A 4
-
-
 #define PROFILE_NUM 1
 #define PROFILE_A_APP_ID 0
 #define SVC_INST_ID 0
 #define GATTS_NUM_HANDLE_TEST_A 4
 
-
 #define LED_PIN GPIO_NUM_2 // Need to change this to the correct GPIO pin
-
 
 static const char *TAG = "esp32_Kevin";
 static const char *TAG2 = "TCP_Client";
@@ -70,12 +63,20 @@ static const char *payload = "Message from ESP32";
 static const uint16_t GATTS_SERVICE_UUID_TEST_A = 0x00FF;
 static const uint16_t GATTS_CHAR_UUID_TEST_A = 0xFF01;
 static const uint16_t GATTS_DESCR_UUID_TEST_A = 0x3333;
+
+static const uint16_t primary_service_uuid = GATTS_SERVICE_UUID_TEST_A;
+static const uint16_t character_declaration_uuid = 0x2803;
+#define CHAR_DECLARATION_SIZE (sizeof(uint8_t))
+static const uint8_t char_prop_read_write = ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE;
+static const uint16_t descr_value = GATTS_DESCR_UUID_TEST_A;
+
+
 static const uint8_t char_value[4] = {0x11, 0x22, 0x33, 0x44};
-static const uint8_t adv_service_uuid128[16] = {
-    /* LSB <--------------------------------------------------------------------------------> MSB */
+static uint8_t service_uuid[16] = {
+   
     //first uuid, 16bit, [12],[13] is the value
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-}
+};
 //Fram till här
 
 static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
@@ -149,16 +150,16 @@ static esp_gatts_attr_db_t gatt_db[GATTS_NUM_HANDLE_TEST_A] = {
 static esp_ble_adv_data_t adv_data = {
     .set_scan_rsp = false,
     .include_name = true,
-    .include_txpower = true,
-     .min_interval = 0x0006,  // 7.5ms
-    .max_interval = 0x0010,  // 20ms
+    .include_txpower = false,
+     .min_interval = 0x20,  
+    .max_interval = 0x40,  
     .appearance = 0x00,
-    .manufacturer_len = 0,  // TEST_MANUFACTURER_DATA_LEN,
-    .p_manufacturer_data = NULL,  // test_manufacturer,
+    .manufacturer_len = 0,  
+    .p_manufacturer_data = NULL,  
     .service_data_len = 0,
     .p_service_data = NULL,
     .service_uuid_len = 16,
-    .p_service_uuid = adv_service_uuid128,
+    .p_service_uuid = service_uuid,
     .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
 
 };
@@ -242,12 +243,14 @@ void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp
     if(event ==  ESP_GATTS_REG_EVT)
     {
         esp_ble_gap_set_device_name("ESP32_BLE");
-        esp_ble_gap_config_adv_data(&adv_data);
+        esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
+        ESP_ERROR_CHECK(ret);
     }
 
     if (gl_profile_tab[PROFILE_A_APP_ID].gatts_cb )
     {
         gl_profile_tab[PROFILE_A_APP_ID].gatts_cb(event, gatts_if, param);
+
     }
 
 
@@ -281,7 +284,7 @@ void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             {
                 ESP_LOGE(TAG, "Advertising stop failed");
             }
-
+            break;
         case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
             ESP_LOGI(TAG, "Update connection parameters");
             break;
@@ -512,6 +515,7 @@ void wifi_connect()
 
 // Connect to a Wi-Fi network with the specified SSID and password
 // Lite osäker på om jag behöver denna funktionen
+/*
 void wifi_connect_with_credentials(const char *ssid, const char *password)
 {
     wifi_config_t wifi_config = {
@@ -531,7 +535,7 @@ void wifi_connect_with_credentials(const char *ssid, const char *password)
 
 
 }
-
+*/
 void init_ble()
 {
     esp_err_t ret;
@@ -578,12 +582,13 @@ void init_ble()
         return;
     }
 
+    // Register the GAP callback 
     ret = esp_ble_gap_register_callback(gap_event_handler);
+    ESP_ERROR_CHECK(ret);
     if (ret){
         ESP_LOGE(TAG, "%s gap register failed, error code = %x", __func__, ret);
         return;
     }
-
 
 
     // Vet inte om det nöödvändigt att ha dessa 3 funktioner, skrev av från GATT server exemplet på ESP-IDF
@@ -618,9 +623,13 @@ void init_ble()
 
     ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
     ESP_ERROR_CHECK(esp_ble_gatts_app_register(PROFILE_A_APP_ID));
-    ESP_ERROR_CHECK(esp_ble_gap_register_callback);
+    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
+    //ESP_ERROR_CHECK(esp_ble_gap_register_callback);  //kommenterade eftersom vet inte om det krockar med nåt
 
 }
+
+//Komma tllbak till denna senare
+//extern esp_err_t esp_ble_gap_config_adv_data(esp_ble_adv_data_t *adv_data);
 
 
 int read_photo_sensor()
