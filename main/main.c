@@ -82,7 +82,33 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
 //void wifi_connect_with_credentials(const char *ssid, const char *password);
 void init_ble();
 
+static esp_ble_adv_params_t adv_params = {
+    .adv_int_min = 0x20,
+    .adv_int_max = 0x40,
+    .adv_type = ADV_TYPE_IND,
+    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .peer_addr = {0},
+    .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .channel_map = ADV_CHNL_ALL,
+    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
 
+static esp_ble_adv_data_t adv_data = {
+    .set_scan_rsp = false,
+    .include_name = true,
+    .include_txpower = false,
+     .min_interval = 0x20,  
+    .max_interval = 0x40,  
+    .appearance = 0x00,
+    .manufacturer_len = 0,  
+    .p_manufacturer_data = NULL,  
+    .service_data_len = 0,
+    .p_service_data = NULL,
+    .service_uuid_len = 16,
+    .p_service_uuid = service_uuid,
+    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
+
+};
 
 struct gatts_profile_inst {
     esp_gatts_cb_t gatts_cb;
@@ -146,22 +172,8 @@ static esp_gatts_attr_db_t gatt_db[GATTS_NUM_HANDLE_TEST_A] = {
 
 };
 
-static esp_ble_adv_data_t adv_data = {
-    .set_scan_rsp = false,
-    .include_name = true,
-    .include_txpower = false,
-     .min_interval = 0x20,  
-    .max_interval = 0x40,  
-    .appearance = 0x00,
-    .manufacturer_len = 0,  
-    .p_manufacturer_data = NULL,  
-    .service_data_len = 0,
-    .p_service_data = NULL,
-    .service_uuid_len = 16,
-    .p_service_uuid = service_uuid,
-    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
 
-};
+
 static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
     switch(event)
@@ -232,9 +244,6 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
 
 }
 
-// GATT server event handler
-// Finns lite mer kod som kan saknas men kan hittas på:
-// https://github.com/espressif/esp-idf/blob/v5.2.3/examples/bluetooth/bluedroid/ble/gatt_server/tutorial/Gatt_Server_Example_Walkthrough.md
 void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
 
@@ -245,13 +254,13 @@ void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp
         esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
         ESP_ERROR_CHECK(ret);
     }
-
+    
     if (gl_profile_tab[PROFILE_A_APP_ID].gatts_cb )
     {
         gl_profile_tab[PROFILE_A_APP_ID].gatts_cb(event, gatts_if, param);
 
     }
-
+    
 
 }
 
@@ -261,6 +270,7 @@ void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     {
         case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
             ESP_LOGI(TAG, "Advertising data set complete");
+            esp_ble_gap_start_advertising(&adv_params);
             break;
         
         case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
@@ -295,21 +305,6 @@ void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 }       
 
 
-
-/*
-// Wi-Fi event handler
-//OSäker om jag behöver denna delen
-static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGI(TAG, "Wi-Fi disconnected, trying to reconnect...");
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "Got IP: %s", ip4addr_ntoa(&event->ip_info.ip));
-    }
-}
-*/
-
 void init_led();
 void turn_on_led();
 void turn_off_led();
@@ -330,19 +325,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initilize Bluetooth
-    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
-    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
-    ESP_ERROR_CHECK(esp_bluedroid_init());
-    ESP_ERROR_CHECK(esp_bluedroid_enable());
-
-
-    // Register the GATT server 
-    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
-    ESP_ERROR_CHECK(esp_ble_gatts_app_register(PROFILE_A_APP_ID));
-    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));  
-
+   
     wifi_connect(); 
 
     init_ble();
@@ -350,7 +333,6 @@ void app_main(void)
    // xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
 
 }
-
 
 void tcp_client(void *pvParameters)
 {
@@ -512,67 +494,81 @@ void wifi_connect()
     }
 }
 
-// Connect to a Wi-Fi network with the specified SSID and password
-// Lite osäker på om jag behöver denna funktionen
-/*
-void wifi_connect_with_credentials(const char *ssid, const char *password)
-{
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = ""
-            .password = "",
-        },
-    };
-
-    strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());  
-    ESP_ERROR_CHECK(esp_wifi_connect());
-
-
-}
-*/
 void init_ble()
 {
     esp_err_t ret;
 
-    // Initilize NVS
-    ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
+    //Check if the BT controller is already enabled and disable it if it is
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+    ESP_LOGI(TAG, "Bluetooth controller already enabled, disabling first");
+    ret = esp_bt_controller_disable();
+    if (ret) {
+        ESP_LOGE(TAG, "Bluetooth controller disable failed: %s", esp_err_to_name(ret));
+        return;
     }
-    ESP_ERROR_CHECK(ret);
+    ret = esp_bt_controller_deinit();
+    if (ret) {
+        ESP_LOGE(TAG, "Bluetooth controller deinitialize failed: %s", esp_err_to_name(ret));
+        return;
+    }
+    }   
+    
+    //Check if the bluedroid stack is already enabled and disable it if it is
+    if(esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED){
+
+        ESP_LOGI(TAG, "Bluedroid stack already enabled, disabling first");
+        ret = esp_bluedroid_disable();
+        if (ret) {
+            ESP_LOGE(TAG, "Bluedroid stack disable failed: %s", esp_err_to_name(ret));
+            return;
+        }
+    }
+    //Check if the bluedroid stack is already initialized and deinitialize it if it is
+    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED){
+
+        ESP_LOGI(TAG, "Bluedroid stack already initialized, deinitializing first");
+        ret = esp_bluedroid_deinit();
+        if (ret) {
+            ESP_LOGE(TAG, "Bluedroid stack deinitialize failed: %s", esp_err_to_name(ret));
+            return;
+        }
+
+    }
 
     // Initilize the BT controller
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);
     if (ret) {
-        ESP_LOGE(TAG, "%s init bluetooth failed", __func__);
+        ESP_LOGE(TAG, "Bluetooth controller initialize failed: %s", esp_err_to_name(ret));
         return;
     }
 
+    // Enable the BT controller
     ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
     if(ret) {
-        ESP_LOGE(TAG, "%s enable bluetooth failed", __func__);
+        ESP_LOGE(TAG, "Bluetooth controller enable failed: %s", esp_err_to_name(ret));
         return;
     }
 
-    // Initilize bluedroid
-    ret = esp_bluedroid_init();
-    if (ret) {
-        ESP_LOGE(TAG, "%s init bluetooth failed", __func__);
-        return;
-    }
+    // Check if the bluedroid stack is already uninitialized and initialize it if it is
+    if(esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED){
+        ret = esp_bluedroid_init();
 
+        if (ret) {
+            ESP_LOGE(TAG, "Bluedroid stack initialize failed: %s", esp_err_to_name(ret));
+            return;
+        }
+    } 
+    
+    //Check if the bluedroid stack is already enabled and enable it if it don't
+    if(esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED){
     ret = esp_bluedroid_enable();
     if (ret) {
-        ESP_LOGE(TAG, "%s enable bluetooth failed", __func__);
+        ESP_LOGE(TAG, "Bluedroid stack enable failed: %s", esp_err_to_name(ret));
         return;
-    }
+        }
+    } 
+    
 
     // Register the gatt server
     ret = esp_ble_gatts_register_callback(gatts_event_handler);
@@ -589,21 +585,26 @@ void init_ble()
         return;
     }
 
-
-    // Vet inte om det nöödvändigt att ha dessa 3 funktioner, skrev av från GATT server exemplet på ESP-IDF
-    // https://github.com/espressif/esp-idf/blob/v5.2.3/examples/bluetooth/bluedroid/ble/gatt_server/tutorial/Gatt_Server_Example_Walkthrough.md
-    
-    // Register the application ID
-    // This function is called to register application identifier.
+    //Register the application ID
     ret = esp_ble_gatts_app_register(PROFILE_A_APP_ID); 
     if (ret){
         ESP_LOGE(TAG, "%s gatts app register failed, error code = %x", __func__, ret);
         return;
     }
 
-    /* 
-    Denna är om man har flera appar som ska registreras, kommenterar det för att den buildar inte annars
+    // Set the local MTU size
+     //MTU = Maximum Transmission Unit alltså max storlek på en paket
+    //Kan vara bra att minnas att MTU är 23 bytes som standard 
+    esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(512);
+    if (local_mtu_ret){
+        ESP_LOGE(TAG, "set local  MTU failed, error code = %x", local_mtu_ret);
+    }
+    
+    ESP_LOGI(TAG, "BLE init complete");
 
+    // https://github.com/espressif/esp-idf/blob/v5.2.3/examples/bluetooth/bluedroid/ble/gatt_server/tutorial/Gatt_Server_Example_Walkthrough.md
+    //Denna är om man har flera appar som ska registreras, kommenterar det för att den buildar inte annars
+    /*
     ret = esp_ble_gatts_app_register(PROFILE_B_APP_ID);
     if (ret){
         ESP_LOGE(TAG, "%s gatts app register failed, error code = %x", __func__, ret);
@@ -611,25 +612,7 @@ void init_ble()
     }
     */
 
-    // Set the local MTU size
-    //MTU = Maximum Transmission Unit alltså max storlek på en paket
-    //Kan vara bra att minnas att MTU är 23 bytes som standard 
-    
-    esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(512);
-    if (local_mtu_ret){
-        ESP_LOGE(TAG, "set local  MTU failed, error code = %x", local_mtu_ret);
-    }
-
-    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
-    ESP_ERROR_CHECK(esp_ble_gatts_app_register(PROFILE_A_APP_ID));
-    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
-    //ESP_ERROR_CHECK(esp_ble_gap_register_callback);  //kommenterade eftersom vet inte om det krockar med nåt
-
 }
-
-//Komma tllbak till denna senare
-//extern esp_err_t esp_ble_gap_config_adv_data(esp_ble_adv_data_t *adv_data);
-
 
 int read_photo_sensor()
 {
@@ -658,7 +641,6 @@ int read_photo_sensor()
 
 }
 
-
 void init_led()
 {
     gpio_reset_pin(LED_PIN);
@@ -674,3 +656,52 @@ void turn_off_led()
 {
     gpio_set_level(LED_PIN, 0);
 }
+
+//54-32-04-01-49-f0
+/*
+    EXTRA FUNCTIONS THAT I MAY WANT TO USE LATER OR IMPLEMENT
+
+    Wi-Fi event handler
+    OSäker om jag behöver denna delen
+    static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) 
+    {
+        if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) 
+        {
+            ESP_LOGI(TAG, "Wi-Fi disconnected, trying to reconnect...");
+            esp_wifi_connect();
+        }   
+        else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) 
+        {
+            ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+            ESP_LOGI(TAG, "Got IP: %s", ip4addr_ntoa(&event->ip_info.ip));
+        }
+    }
+
+    //Komma tllbak till denna senare
+    //extern esp_err_t esp_ble_gap_config_adv_data(esp_ble_adv_data_t *adv_data);
+
+    // Connect to a Wi-Fi network with the specified SSID and password
+    // Lite osäker på om jag behöver denna funktionen
+
+    void wifi_connect_with_credentials(const char *ssid, const char *password)
+    {
+        wifi_config_t wifi_config = 
+        {
+            .sta = {
+            .ssid = ""
+            .password = "",
+        },
+    };
+
+    strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());  
+    ESP_ERROR_CHECK(esp_wifi_connect());
+
+
+    }
+*/
+
