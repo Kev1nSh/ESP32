@@ -42,10 +42,10 @@
 
 
 
-#define WIFI_SSID "grupp3"
-#define WIFI_PASS "datorkomunkation"
+#define WIFI_SSID "AuPx-Wifi-2.4"
+#define WIFI_PASS "AuPx-HIF"
 #define PORT 1256
-#define SERVER_IP "192.168.1.100"
+#define SERVER_IP "192.168.10.74"
 
 #define PROFILE_NUM 1
 #define PROFILE_A_APP_ID 0
@@ -74,13 +74,12 @@ static const uint16_t descr_value = GATTS_DESCR_UUID_TEST_A;
 static const uint8_t char_value[4] = {0x11, 0x22, 0x33, 0x44};
 static uint8_t service_uuid[16] = {
    
-    //first uuid, 16bit, [12],[13] is the value
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
-//Fram till här
+
 
 static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
-void wifi_connect_with_credentials(const char *ssid, const char *password);
+//void wifi_connect_with_credentials(const char *ssid, const char *password);
 void init_ble();
 
 
@@ -348,7 +347,7 @@ void app_main(void)
 
     init_ble();
 
-    xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
+   // xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
 
 }
 
