@@ -21,9 +21,11 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include <inttypes.h>
 #include <nvs_flash.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_continuous.h"
@@ -40,6 +42,7 @@
 #include "esp_bt_defs.h"
 #include "esp_err.h"
 
+//#include <simple_ble/SimpleBle.h>
 
 
 #define WIFI_SSID "AuPx-Wifi-2.4"
@@ -51,6 +54,8 @@
 #define PROFILE_A_APP_ID 0
 #define SVC_INST_ID 0
 #define GATTS_NUM_HANDLE_TEST_A 4
+#define GATTS_DEMO_CHAR_VAL_LEN_MAX 0x40
+#define adv_config_flag      (1 << 0)
 
 #define LED_PIN GPIO_NUM_2 // Need to change this to the correct GPIO pin
 
@@ -71,15 +76,16 @@ static const uint8_t char_prop_read_write = ESP_GATT_PERM_READ | ESP_GATT_PERM_W
 static const uint16_t descr_value = GATTS_DESCR_UUID_TEST_A;
 
 
-static const uint8_t char_value[4] = {0x11, 0x22, 0x33, 0x44};
+static uint8_t char_value[] = {0x11, 0x22, 0x33};
+static uint16_t char_value_len = sizeof(char_value);
 static uint8_t service_uuid[16] = {
    
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
-
-
+static uint8_t adv_config_done;
+//static simple_ble_cfg_t *g_ble_cfg_p;
 static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
-//void wifi_connect_with_credentials(const char *ssid, const char *password);
+
 void init_ble();
 
 static esp_ble_adv_params_t adv_params = {
@@ -132,6 +138,7 @@ static struct gatts_profile_inst gl_profile_tab[PROFILE_NUM] = {
     },
 };
 
+
 //vet inte vad det här, måste kolla upp
 static esp_gatts_attr_db_t gatt_db[GATTS_NUM_HANDLE_TEST_A] = {
 
@@ -179,64 +186,164 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
     switch(event)
     {
         case ESP_GATTS_REG_EVT:
+
+            //Register the application
+            ESP_LOGI(TAG, "REGISTER_APP_EVT, status %d, app_id %d\n", param->reg.status, param->reg.app_id);
+            gl_profile_tab[PROFILE_A_APP_ID].service_id.is_primary = true;
+            gl_profile_tab[PROFILE_A_APP_ID].service_id.id.inst_id = 0x00;
+            gl_profile_tab[PROFILE_A_APP_ID].service_id.id.uuid.len = ESP_UUID_LEN_16;
+            gl_profile_tab[PROFILE_A_APP_ID].service_id.id.uuid.uuid.uuid16 = GATTS_SERVICE_UUID_TEST_A;
+
+        
             esp_ble_gatts_create_attr_tab(gatt_db, gatts_if, GATTS_NUM_HANDLE_TEST_A, SVC_INST_ID);
-            break;
+            esp_ble_gatts_create_service(gatts_if, &gl_profile_tab[PROFILE_A_APP_ID].service_id, GATTS_NUM_HANDLE_TEST_A);
+            esp_ble_gap_set_device_name("ESP32_BLE");
     
-        case ESP_GATTS_WRITE_EVT:
-            if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle)
-            {
+            //Configure the adv data
+            esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
+            if (ret){
+                ESP_LOGE(TAG, "config adv data failed, error code = %x", ret);
+            }
+            adv_config_done |= adv_config_flag;
+            break;
             
-                char ssid[32] = {0};
-                char password[64] = {0};
-                char received_data[96] = {0};
+        case ESP_GATTS_READ_EVT:
+            ESP_LOGI(TAG, "ESP_GATTS_READ_EVT, handle %d", param->read.handle);
+            
+            //Prepare the response
+            uint8_t *data = char_value;
+            uint16_t data_len = char_value_len;
 
-                //Copy the received data to a local buffer
-                memcpy(received_data, param->write.value, param->write.len);
+            //Send the response
+            esp_gatt_rsp_t rsp;
+            memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+            rsp.attr_value.handle = param->read.handle;
+            rsp.attr_value.len = data_len;
+            memcpy(rsp.attr_value.value, data, data_len);
 
-                //Find the delimiter
-                char *delimiter = strchr(received_data, ':');
-                if (delimiter != NULL)
-                {
-                    
-                    //Extract the SSID
-                    size_t ssid_len = delimiter - received_data;
-                    strncpy(ssid, received_data, ssid_len);
-                    ssid[ssid_len] = '\0'; 
+            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
+            break;
+            
+        case ESP_GATTS_WRITE_EVT:
+            ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT, handle %d, value len = %d", param->write.handle, param->write.len); 
 
-                    //Extract the password
-                    strncpy(password, delimiter + 1, param->write.len - ssid_len - 1);
-                    password[param->write.len - ssid_len - 1] = '\0';
+            //Check if the write is request or a command
+            if(param->write.is_prep){
+            //Prepare the response
+                esp_gatt_rsp_t rsp;
+                memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+                rsp.attr_value.handle = param->write.handle;
+                rsp.attr_value.len = param->write.len;
+                memcpy(rsp.attr_value.value, param->write.value, param->write.len);
 
-                    //Print the received data
-                    ESP_LOGI(TAG, "Received SSID: %s", ssid);
-                    ESP_LOGI(TAG, "Received password: %s", password);
+                //Send the response
+                esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, &rsp);
+            }
 
-                    //Connect to the Wi-Fi network
+            //Process the data written by the client
+            data = param->write.value;
+            data_len = param->write.len;
 
-                    //wifi_connect_with_credentials(ssid, password);
-                    
-                    //Kanske jag kan importera credentials till min wifi_connect funktion
-                    
-                    /*wifi_config_t wifi_config = {
-                        .sta = {
-                            .ssid = ssid,
-                            .password = password,
-                        },
-                    };  
-                    */
+            //Print the data
+            ESP_LOGI(TAG, "Data written: ");
+            for(int i = 0; i < data_len; i++)
+            {
+                ESP_LOGI(TAG, "%02x ", data[i]);
+            }
+
+            //Update the characteristic value
+            //Osäker på om det här är rätt eller ens behövs
+            memcpy(char_value, data, data_len);
+            char_value_len = data_len;
+
+            break;
+        case ESP_GATTS_RESPONSE_EVT:
+            ESP_LOGI(TAG, "ESP_GATTS_RESPONSE_EVT, status =  %d, handle =  %d", param->rsp.status, param->rsp.handle);    
+            
+            //Check the status of the response
+            if (param->rsp.status != ESP_GATT_OK)
+            {
+                ESP_LOGI(TAG, "Response failed with status %d", param->rsp.status);
+                //Här kan jag skriva kod för att hantera om responsen misslyckas
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Response successful for handle %d", param->rsp.handle);
+                //Här kan jag skriva kod för att hantera om responsen lyckas
+            }
+            break;
+            
+        case ESP_GATTS_EXEC_WRITE_EVT:
+
+        case ESP_GATTS_MTU_EVT:
+
+        case ESP_GATTS_CONF_EVT:
+
+        case ESP_GATTS_UNREG_EVT:
+
+        case ESP_GATTS_CREATE_EVT: 
+        ESP_LOGI(TAG, "ESP_GATTS_CREATE_EVT, status %d, service_handle %d\n", param->create.status, param->create.service_handle);
+            if(param->create.status == ESP_GATT_OK)
+            {
+                gl_profile_tab[PROFILE_A_APP_ID].service_handle = param->create.service_handle;
+                gl_profile_tab[PROFILE_A_APP_ID].char_uuid.len = ESP_UUID_LEN_16;
+                gl_profile_tab[PROFILE_A_APP_ID].char_uuid.uuid.uuid16 = GATTS_CHAR_UUID_TEST_A;
+
+                esp_gatt_char_prop_t char_property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE;
+
+                //Logga om service skapades
+                esp_err_t start_service_ret = esp_ble_gatts_start_service(gl_profile_tab[PROFILE_A_APP_ID].service_handle);
+                if (start_service_ret != ESP_OK){
+                    ESP_LOGE(TAG, "start service failed, error code = %x", start_service_ret);
                 }
-
-                else 
-                {
-                    ESP_LOGE(TAG, "Invalid data received");
+                
+                char_property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_NOTIFY;	
+            
+                esp_attr_value_t char_val = {
+                .attr_max_len = GATTS_DEMO_CHAR_VAL_LEN_MAX,
+                .attr_len = sizeof(char_value),
+                .attr_value = char_value,
+                };
+            
+            
+            
+                esp_err_t add_char_ret =
+                esp_ble_gatts_add_char(gl_profile_tab[PROFILE_A_APP_ID].service_handle,
+                                        &gl_profile_tab[PROFILE_A_APP_ID].char_uuid,
+                                        ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                                        char_property,
+                                        &char_val,
+                                        NULL);
+            
+                if (add_char_ret != ESP_OK){
+                    ESP_LOGE(TAG, "add char failed, error code =%x", add_char_ret);
                 }
-
+                ESP_LOGI(TAG, "Free heap size after adding characteristic: %d", esp_get_free_heap_size());
+            }   
+            else {
+                ESP_LOGE(TAG, "Service creation failed, status %d", param->create.status); 
             }
             break;
 
-        default:
-            break;
+        case ESP_GATTS_CREAT_ATTR_TAB_EVT:
 
+        case ESP_GATTS_SET_ATTR_VAL_EVT:
+
+        case ESP_GATTS_ADD_INCL_SRVC_EVT:
+
+        case ESP_GATTS_SEND_SERVICE_CHANGE_EVT:
+
+        case ESP_GATTS_ADD_CHAR_EVT:
+
+        case ESP_GATTS_ADD_CHAR_DESCR_EVT:
+
+        
+
+        default:
+         ESP_LOGI(TAG, "Event %d not handled", event);
+          break;
+
+        
         
     
     }
@@ -246,22 +353,34 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
 
 void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
-
-
     if(event ==  ESP_GATTS_REG_EVT)
     {
-        esp_ble_gap_set_device_name("ESP32_BLE");
-        esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
-        ESP_ERROR_CHECK(ret);
+        if(param->reg.status == ESP_GATT_OK)
+        {
+            gl_profile_tab[param->reg.app_id].gatts_if = gatts_if;
+        }   
+        else
+        {
+            ESP_LOGI(TAG, "Reg app failed, app_id %04x, status %d\n", param->reg.app_id, param->reg.status);
+            return;
+        }
     }
     
-    if (gl_profile_tab[PROFILE_A_APP_ID].gatts_cb )
+    do 
     {
-        gl_profile_tab[PROFILE_A_APP_ID].gatts_cb(event, gatts_if, param);
-
+        int idx;
+        for(idx = 0; idx < PROFILE_NUM; idx++)
+        {
+            if(gatts_if == ESP_GATT_IF_NONE || gatts_if == gl_profile_tab[idx].gatts_if)
+            {
+                if(gl_profile_tab[idx].gatts_cb)
+                {
+                    gl_profile_tab[idx].gatts_cb(event, gatts_if, param);
+                }
+            }
+        }
     }
-    
-
+    while(0);
 }
 
 void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
@@ -683,6 +802,8 @@ void turn_off_led()
     // Connect to a Wi-Fi network with the specified SSID and password
     // Lite osäker på om jag behöver denna funktionen
 
+    //void wifi_connect_with_credentials(const char *ssid, const char *password);
+
     void wifi_connect_with_credentials(const char *ssid, const char *password)
     {
         wifi_config_t wifi_config = 
@@ -703,5 +824,52 @@ void turn_off_led()
 
 
     }
-*/
+
+    
+            case ESP_GATTS_WRITE_EVT:
+            if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle)
+            {
+            
+                char ssid[32] = {0};
+                char password[64] = {0};
+                char received_data[96] = {0};
+
+                //Copy the received data to a local buffer
+                memcpy(received_data, param->write.value, param->write.len);
+
+                //Find the delimiter
+                char *delimiter = strchr(received_data, ':');
+                if (delimiter != NULL)
+                {
+                    
+                    //Extract the SSID
+                    size_t ssid_len = delimiter - received_data;
+                    strncpy(ssid, received_data, ssid_len);
+                    ssid[ssid_len] = '\0'; 
+
+                    //Extract the password
+                    strncpy(password, delimiter + 1, param->write.len - ssid_len - 1);
+                    password[param->write.len - ssid_len - 1] = '\0';
+
+                    //Print the received data
+                    ESP_LOGI(TAG, "Received SSID: %s", ssid);
+                    ESP_LOGI(TAG, "Received password: %s", password);
+
+                    //Connect to the Wi-Fi network
+
+                    //wifi_connect_with_credentials(ssid, password);
+                    
+                    //Kanske jag kan importera credentials till min wifi_connect funktion
+                    
+                    wifi_config_t wifi_config = {
+                        .sta = {
+                            .ssid = ssid,
+                            .password = password,
+                        },
+                    };  
+                    
+                }
+            
+
+    */
 
