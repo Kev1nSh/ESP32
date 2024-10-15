@@ -42,15 +42,20 @@
 #include "esp_bt_defs.h"
 #include "esp_err.h"
 #include <inttypes.h>
-
-
-//#include <simple_ble/SimpleBle.h>
+#include "esp_now.h"
 
 
 #define WIFI_SSID "AuPx-Wifi-2.4"
 #define WIFI_PASS "AuPx-HIF"
 #define PORT 1256
 #define SERVER_IP "192.168.10.74"
+
+#define MAX_SSID_LEN 32
+#define MAX_PASS_LEN 64
+#define MAX_IP_LEN 16
+#define MAX_PORT_LEN 6
+#define ESP_NOW_ETH_ALEN 6
+
 
 #define PROFILE_NUM 1
 #define PROFILE_A_APP_ID 0
@@ -66,6 +71,27 @@ static const char *TAG = "esp32_Kevin";
 static const char *TAG2 = "TCP_Client";
 
 static const char *payload = "Message from ESP32";
+
+typedef struct {
+    char ssid[MAX_SSID_LEN];
+    char pass[MAX_PASS_LEN];
+    char ip[MAX_IP_LEN];
+    int port;
+}esp_now_config_t;
+
+esp_now_config_t config = 
+{
+    .ssid = WIFI_SSID,
+    .pass = WIFI_PASS,
+    .ip = SERVER_IP,
+    .port = PORT,
+};
+
+char wifi_ssid[MAX_SSID_LEN];
+char wifi_pass[MAX_PASS_LEN];
+char server_ip[MAX_IP_LEN];
+char server_port[MAX_PORT_LEN];
+
 
 //Vet inte heller vad det här är, måste kolla upp
 static const uint16_t GATTS_SERVICE_UUID_TEST_A = 0x00FF;
@@ -190,7 +216,86 @@ static esp_gatts_attr_db_t gatt_db[GATTS_NUM_HANDLE_TEST_A] = {
 
 };
 
+void send_esp_now_config()
+{
+    esp_now_config_t config;
+    strcpy(config.ssid, wifi_ssid);
+    strcpy(config.pass, wifi_pass);
+    strcpy(config.ip, server_ip);
+    config.port = atoi(server_port);
 
+    uint8_t broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    ESP_ERROR_CHECK(esp_now_send(broadcast_mac, (uint8_t *)&config, sizeof(esp_now_config_t)));
+
+
+    esp_err_t err = esp_now_send(NULL, (uint8_t *)&config, sizeof(esp_now_config_t));
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to send ESP-NOW config");
+    }
+}
+
+void esp_now_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status)
+{
+    char mac_str[18];
+    sprintf(mac_str, "%02x:%02x:%02x:%02x:%02x:%02x", 
+            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
+    if (status == ESP_NOW_SEND_SUCCESS)
+    {
+        ESP_LOGI(TAG, "Successfully sent ESP-NOW message to %s", mac_str);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Failed to send ESP-NOW message to %s", mac_str);
+    }
+
+
+
+
+
+}
+
+void esp_now_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len)
+
+{
+    esp_now_config_t *config = (esp_now_config_t *)data;
+    ESP_LOGI(TAG, "Received ESP-NOW config: SSID: %s, Password: %s, IP: %s, Port: %d",
+            config->ssid, config->pass, config->ip, config->port);
+
+    strcpy(wifi_ssid, config->ssid);
+    strcpy(wifi_pass, config->pass);
+    strcpy(server_ip, config->ip);
+    sprintf(server_port, "%d", config->port);
+    snprintf(server_port, sizeof(server_port), "%d", config->port);
+
+    send_esp_now_config();
+}
+
+void update_wifi_and_server_config()
+{
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = "",
+            .password = "",
+        },
+    };
+
+    strncpy((char *)wifi_config.sta.ssid, wifi_ssid, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, wifi_pass, sizeof(wifi_config.sta.password));
+
+    esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
+    esp_wifi_connect();
+
+    //Uppdatera TCP-klientanslutning med nya server IP och port
+
+    int new_port = atoi(server_port);
+
+    // Anslut till servern med den nya IP och port
+
+
+
+}
 
 static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
@@ -242,57 +347,24 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
                     (unsigned int)param->write.trans_id,
                     (unsigned int)param->write.handle); 
 
-            //Check if the write is request or a command
+           
             if(!param->write.is_prep){
                 ESP_LOGI(TAG, "GATT_WRITE_EVT, value len %d, value :", param->write.len);
                 esp_log_buffer_hex(TAG, param->write.value, param->write.len);
-                if (gl_profile_tab[PROFILE_A_APP_ID].descr_handle == param->write.handle && param->write.len == 2){
-                    uint16_t descr_value = param->write.value[1]<<8 | param->write.value[0];
-                    if (descr_value == 0x0001){
-                        //Kan strulas här
-                        if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_NOTIFY){
-                            ESP_LOGI(TAG, "notify enable");
-                            uint8_t notify_data[15];
-                            for (int i = 0; i < sizeof(notify_data); ++i)
-                            {
-                                notify_data[i] = i%0xff;
-                            }
-                            // the size of notify_data[] need less than MTU size
-                            esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
-                                                        gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
-                                                        sizeof(notify_data), 
-                                                        notify_data, false);
-                        }
                 
-                    }else if(descr_value == 0x0002){
-                        if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_INDICATE){
-                            ESP_LOGI(TAG, "indicate enable");
-                            uint8_t indicate_data[15];
-                            for (int i = 0; i < sizeof(indicate_data); ++i)
-                            {
-                                indicate_data[i] = i%0xff;
-                            }
-                            // the size of indicate_data[] need less than MTU size
-                            esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
-                                                        gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
-                                                        sizeof(indicate_data), 
-                                                        indicate_data, true);
-                        }
-                    }
-                    else if(descr_value == 0x0000)
-                    {
-                        ESP_LOGI(TAG, "notify/indicate disable ");
-                    }
-                    else
-                    {
-                        ESP_LOGE(TAG, "unknown value");
-                    }
+                if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle)
+                {
+                    memccpy(wifi_ssid, param -> write.value, 0, param -> write.len);
+                    wifi_ssid[param -> write.len] = '\0';
+                    ESP_LOGI(TAG, "SSID: %s", wifi_ssid);
+
                 }
+                // Här kna man ta emot lösenordet
+                
             }
             example_write_event_env(gatts_if, &a_prepare_write_env, param);
             break;
         }
-
         case ESP_GATTS_EXEC_WRITE_EVT:
             ESP_LOGI(TAG, "ESP_GATTS_EXEC_WRITE_EVT");
             esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
@@ -314,12 +386,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
                 //Här kan jag skriva kod för att hantera om responsen lyckas
             }
             break;
-            
-        case ESP_GATTS_MTU_EVT:
-
-        case ESP_GATTS_CONF_EVT:
-
-        case ESP_GATTS_UNREG_EVT:
+        
 
         case ESP_GATTS_CONNECT_EVT:
             ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT, conn_id %d, remote " ESP_BD_ADDR_STR, param->connect.conn_id, ESP_BD_ADDR_HEX(param->connect.remote_bda));
@@ -444,16 +511,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
                 param->add_char.status, param->add_char.attr_handle, param->add_char.service_handle);
             break;
 
-        
-        case ESP_GATTS_CREAT_ATTR_TAB_EVT:
 
-        case ESP_GATTS_SET_ATTR_VAL_EVT:
-
-        case ESP_GATTS_ADD_INCL_SRVC_EVT:
-
-        case ESP_GATTS_SEND_SERVICE_CHANGE_EVT:
-
-    
 
         default:
          ESP_LOGI(TAG, "Event %d not handled", event);
@@ -551,6 +609,8 @@ void turn_off_led();
 void tcp_client(void *pvParameters);
 int read_photo_sensor();
 void wifi_connect();
+void init_esp_now();
+
 
 void app_main(void)
 {
@@ -570,7 +630,15 @@ void app_main(void)
 
     init_ble();
 
-   // xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
+    xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
+
+    //Initiera ESP-NOW
+    //init_esp_now();
+    esp_now_config_t config;
+    esp_now_register_recv_cb(esp_now_recv_cb);
+
+    // Om serverkonfigurationen saknas, skicka den via esp-now
+    
 
 }
 
@@ -842,15 +910,7 @@ void init_ble()
     
     ESP_LOGI(TAG, "BLE init complete");
 
-    // https://github.com/espressif/esp-idf/blob/v5.2.3/examples/bluetooth/bluedroid/ble/gatt_server/tutorial/Gatt_Server_Example_Walkthrough.md
-    //Denna är om man har flera appar som ska registreras, kommenterar det för att den buildar inte annars
-    /*
-    ret = esp_ble_gatts_app_register(PROFILE_B_APP_ID);
-    if (ret){
-        ESP_LOGE(TAG, "%s gatts app register failed, error code = %x", __func__, ret);
-        return;
-    }
-    */
+
 
 }
 
@@ -975,6 +1035,14 @@ void example_exec_write_event_env(prepare_type_env_t *prepare_write_env, esp_ble
     prepare_write_env->prepare_len = 0;
 }
 
+void init_esp_now()
+{
+    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(esp_now_register_send_cb(esp_now_send_cb));
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(esp_now_recv_cb));
+    ESP_LOGI(TAG, "ESP-NOW init complete");
+
+}
 
 
 //54-32-04-01-49-f0
@@ -1074,3 +1142,50 @@ void example_exec_write_event_env(prepare_type_env_t *prepare_write_env, esp_ble
 
     */
 
+/*
+ if (gl_profile_tab[PROFILE_A_APP_ID].descr_handle == param->write.handle && param->write.len == 2){
+                        uint16_t descr_value = param->write.value[1]<<8 | param->write.value[0];
+                        if (descr_value == 0x0001){
+                            //Kan strulas här
+                            if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_NOTIFY){
+                                ESP_LOGI(TAG, "notify enable");
+                                uint8_t notify_data[15];
+                                for (int i = 0; i < sizeof(notify_data); ++i)
+                                {
+                                    notify_data[i] = i%0xff;
+                                }
+                                // the size of notify_data[] need less than MTU size
+                                esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
+                                                            gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
+                                                            sizeof(notify_data), 
+                                                            notify_data, false);
+                            }
+                    
+                        }else if(descr_value == 0x0002){
+                            if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_INDICATE){
+                                ESP_LOGI(TAG, "indicate enable");
+                                uint8_t indicate_data[15];
+                                for (int i = 0; i < sizeof(indicate_data); ++i)
+                                {
+                                    indicate_data[i] = i%0xff;
+                                }
+                                // the size of indicate_data[] need less than MTU size
+                                esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
+                                                            gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
+                                                            sizeof(indicate_data), 
+                                                            indicate_data, true);
+                            }
+                        }
+                        else if(descr_value == 0x0000)
+                        {
+                            ESP_LOGI(TAG, "notify/indicate disable ");
+                        }
+                        else
+                        {
+                            ESP_LOGE(TAG, "unknown value");
+                        }
+                    }
+                }
+                example_write_event_env(gatts_if, &a_prepare_write_env, param);
+                break;
+*/
