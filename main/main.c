@@ -44,17 +44,405 @@
 #include <inttypes.h>
 #include "esp_now.h"
 
+#define DEVICE_NAME "ESP32_BLE"
 
+#define TAG "Wifi Station"
 #define WIFI_SSID "AuPx-Wifi-2.4"
 #define WIFI_PASS "AuPx-HIF"
-#define PORT 1256
 #define SERVER_IP "192.168.10.74"
+#define PORT 1256
 
-#define MAX_SSID_LEN 32
-#define MAX_PASS_LEN 64
-#define MAX_IP_LEN 16
-#define MAX_PORT_LEN 6
-#define ESP_NOW_ETH_ALEN 6
+
+#define TCP_TAG "TCP_CLIENT"
+#define BINDOPERATION 1
+#define BROADCASTOPERATION 2
+#define TCP_SOCKET 2
+
+#define LED_PIN 22 //Måste ändras sen
+
+#define SERVICE_UUID 0x1222
+#define CHAR_SSID_UUID 0x1223
+#define CHAR_PASS_UUID 0x1224
+#define CHAR_IP_UUID 0x1225
+
+#define TAG_C "GAP EVENT"
+#define TAG_G "GATT EVENT"
+
+#define ESP_GATT_UUID_CHAR_DESCRIPTION 0x2901
+
+
+static uint16_t service_handle = 0;
+static uint16_t char_ssid_handle = 0;
+static uint16_t char_pass_handle = 0;
+static uint16_t char_ip_handle = 0;
+
+
+static char ssid[64] = "Default SSID";
+static char pass[64] = "Default Password";
+static char ip[64] = "Default IP";
+
+static int credentials_received = 0;
+
+
+typedef struct 
+{
+    esp_bt_uuid_t uuid;
+    esp_attr_value_t attr_value;
+}characteristic_t;
+
+static characteristic_t char_ssid;
+static characteristic_t char_pass;
+static characteristic_t char_ip;
+
+
+static esp_ble_adv_params_t adv_params = {
+    .adv_int_min = 0x20,
+    .adv_int_max = 0x40,
+    .adv_type = ADV_TYPE_IND,
+    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .peer_addr = {0},
+    .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .channel_map = ADV_CHNL_ALL,
+    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
+
+/*
+static esp_ble_adv_data_t adv_data = {
+    .set_scan_rsp = false,
+    .include_name = true,
+    .include_txpower = false,
+     .min_interval = 0x20,  
+    .max_interval = 0x40,  
+    .appearance = 0x00,
+    .manufacturer_len = 0,  
+    .p_manufacturer_data = NULL,  
+    .service_data_len = 0,
+    .p_service_data = NULL,
+    .service_uuid_len = sizeof(service_uuid),
+    .p_service_uuid = service_uuid,
+    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
+
+};
+*/
+void init_characteristics()
+{
+
+    char_ssid.uuid.len = ESP_UUID_LEN_16;
+    char_ssid.uuid.uuid.uuid16 = CHAR_SSID_UUID;
+    char_ssid.attr_value.attr_max_len = sizeof(ssid);
+    char_ssid.attr_value.attr_len = strlen(ssid);
+    char_ssid.attr_value.attr_value = (uint8_t *)ssid;
+
+    char_pass.uuid.len = ESP_UUID_LEN_16;
+    char_pass.uuid.uuid.uuid16 = CHAR_PASS_UUID;
+    char_pass.attr_value.attr_max_len = sizeof(pass);
+    char_pass.attr_value.attr_len = strlen(pass);
+    char_pass.attr_value.attr_value = (uint8_t *)pass;
+
+    char_ip.uuid.len = ESP_UUID_LEN_16; 
+    char_ip.uuid.uuid.uuid16 = CHAR_IP_UUID;
+    char_ip.attr_value.attr_max_len = sizeof(ip);  
+    char_ip.attr_value.attr_len = strlen(ip);
+    char_ip.attr_value.attr_value = (uint8_t *)ip;
+
+}
+
+void create_ble_service(esp_gatt_if_t gatts_if)
+{
+
+    esp_err_t res;
+
+    esp_gatt_srvc_id_t service_id = {
+        .id = {
+            .uuid = {
+                .len = ESP_UUID_LEN_16,
+                .uuid = {
+                    .uuid16 = SERVICE_UUID,
+                },
+            },
+            .inst_id = 0,
+        },
+        .is_primary = true,
+    };
+
+    res = esp_ble_gatts_create_service(gatts_if, &service_id, 10);
+    if (res != ESP_OK)
+    {
+        ESP_LOGE(TAG_G, "Failed to create service, error code %d", res);
+        return;
+    }
+}
+
+void add_characteristics(esp_gatt_if_t gatts_if, uint16_t service_handle, characteristic_t *characteristic)
+{
+
+    esp_err_t res;
+    esp_gatt_char_prop_t char_property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE;
+    ESP_LOGI(TAG_G, "Adding characteristic with UUID %x, attr_value length: %d", characteristic->uuid.uuid.uuid16, characteristic->attr_value.attr_len);
+
+    //Idk if implement this is necessary
+    if (characteristic->attr_value.attr_len > characteristic->attr_value.attr_max_len)
+    {
+        ESP_LOGE(TAG_G, "Attribute length exceeds maximum length, MAX LENGTH: %d, ACTUAL LENGTH: %d", characteristic->attr_value.attr_max_len, characteristic->attr_value.attr_len);
+        return;
+    }
+    
+    res = esp_ble_gatts_add_char(service_handle, &characteristic->uuid, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, char_property, &characteristic->attr_value, NULL);
+    if (res != ESP_OK)
+    {
+        ESP_LOGE(DEVICE_NAME, "Failed to add characteristic, error code %x", res);
+        return;
+    }
+    
+}
+
+
+void setup_ble_adv_data()
+{
+
+    uint8_t service_uuid [16] = {0};
+    service_uuid[0] = (uint8_t) (SERVICE_UUID & 0x00FF);
+    service_uuid[1] = (uint8_t) ((SERVICE_UUID  >> 8) & 0x00FF);
+
+   
+    esp_ble_adv_data_t adv_data = {
+        .set_scan_rsp = false,
+        .include_name = true,
+        .include_txpower = false,
+        .min_interval = 0x20,  
+        .max_interval = 0x40,  
+        .appearance = 0x00,
+        .manufacturer_len = 0,  
+        .p_manufacturer_data = NULL,  
+        .service_data_len = 0,
+         .p_service_data = NULL,
+        .service_uuid_len = sizeof(service_uuid),
+        .p_service_uuid = service_uuid,
+        .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
+
+    };
+    
+    esp_ble_gap_config_adv_data(&adv_data);
+}
+
+void add_descriptor(esp_gatt_if_t gatts_if, uint16_t service_handle, const char *description)
+{
+
+    esp_err_t res;
+    esp_bt_uuid_t descr_uuid = {
+        .len = ESP_UUID_LEN_16,
+        .uuid = {
+            .uuid16 = ESP_GATT_UUID_CHAR_DESCRIPTION,
+        },
+    };
+    
+    esp_attr_value_t descr_value = {
+        .attr_max_len = strlen(description) + 1, // +1 for null terminator
+        .attr_len = strlen(description) + 1,
+        .attr_value = (uint8_t *)description,
+    };  
+
+    ESP_LOGI(TAG_G, "Adding descriptor with description: %s", description);
+    res = esp_ble_gatts_add_char_descr(service_handle, &descr_uuid, ESP_GATT_PERM_READ, &descr_value, NULL);
+    if (res != ESP_OK)
+    {
+        ESP_LOGE(TAG_G, "Failed to add descriptor, error code %x", res);
+        return;
+    }
+}
+
+void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
+{
+
+    switch(event)
+    {
+
+        case ESP_GATTS_REG_EVT:
+            ESP_LOGI(DEVICE_NAME, "Register event");
+            create_ble_service(gatts_if);
+
+            break;
+            
+
+        case ESP_GATTS_READ_EVT:
+            ESP_LOGI(TAG_G, "ESP_GATTS_READ_EVT, handle: %d", param->read.handle);
+
+            esp_gatt_rsp_t rsp;
+            memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
+            rsp.attr_value.handle = param->read.handle;
+            
+            if(param->read.handle == char_ssid_handle)
+            {
+                ESP_LOGI(TAG_G, "Reading SSID characteristic");
+                rsp.attr_value.len = strlen(ssid);
+                memccpy(rsp.attr_value.value, ssid, 0, rsp.attr_value.len);
+            }
+            else if (param->read.handle == char_pass_handle)
+            {
+                ESP_LOGI(TAG_G, "Reading password characteristic");
+                rsp.attr_value.len = strlen(pass);
+                memccpy(rsp.attr_value.value, pass, 0, rsp.attr_value.len);
+            }
+            else if (param->read.handle == char_ip_handle)
+            {
+                ESP_LOGI(TAG_G, "Reading IP characteristic");
+                rsp.attr_value.len = strlen(ip);
+                memccpy(rsp.attr_value.value, ip, 0, rsp.attr_value.len);
+            }
+            else
+            {
+                ESP_LOGE(TAG_G, "Unknown handle: %d", param->read.handle);
+                rsp.attr_value.len = 0;
+            }
+
+            esp_err_t res = esp_ble_gatts_send_response(gatts_if, 
+                    param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
+            if (res != ESP_OK)
+            {
+                ESP_LOGE(TAG_G, "Failed to send response, error code %x", res);
+            }
+            else
+            {
+                ESP_LOGI(TAG_G, "Response sent successfully");
+            }
+            break;
+        
+        case ESP_GATTS_WRITE_EVT:
+            if(param->write.handle == char_ssid_handle)
+            {
+                memset(ssid, 0, sizeof(ssid));
+                memcpy(ssid, param->write.value, param->write.len);
+                ssid[param->write.len] = '\0';
+                
+                ESP_LOGI(TAG_G, "SSID: %s", ssid);
+                printf("SSID recv: %s\n", ssid);
+            }
+            else if (param->write.handle == char_pass_handle)
+            {
+                memset(pass, 0, sizeof(pass));
+                memcpy(pass, param->write.value, param->write.len);
+                pass[param->write.len] = '\0';
+
+                ESP_LOGI(TAG_G, "Password: %s", pass);
+                printf("Password recv: %.*s\n", param->write.len, param->write.value);
+
+                credentials_received = 1;
+            }
+            else if (param->write.handle == char_ip_handle)
+            {
+                memset(ip, 0, sizeof(ip));
+                memcpy(ip, param->write.value, param->write.len);
+                ip[param->write.len] = '\0';
+                ESP_LOGI(TAG_G, "IP: %s", ip);
+                printf("IP recv: %.*s\n", param->write.len, param->write.value);
+            }
+            
+        break;
+
+        case ESP_GATTS_ADD_CHAR_EVT:
+            if(param->add_char.char_uuid.uuid.uuid16 == CHAR_SSID_UUID)
+            {
+                char_ssid_handle = param->add_char.attr_handle;
+                ESP_LOGI(DEVICE_NAME, "Added SSID characteristic: %d", char_ssid_handle);
+            }
+            else if (param->add_char.char_uuid.uuid.uuid16 == CHAR_PASS_UUID)
+            {
+                char_pass_handle = param->add_char.attr_handle;
+                ESP_LOGI(DEVICE_NAME, "Added password characteristic: %d", char_pass_handle);
+            }
+            else if (param->add_char.char_uuid.uuid.uuid16 == CHAR_IP_UUID)
+            {
+                char_ip_handle = param->add_char.attr_handle;
+                ESP_LOGI(DEVICE_NAME, "Added IP characteristic: %d", char_ip_handle);
+            }
+        break;
+
+        case ESP_GATTS_ADD_CHAR_DESCR_EVT:
+            ESP_LOGI(DEVICE_NAME, "Added characteristic descriptor event");	
+            break;
+
+        case ESP_GATTS_CREATE_EVT:
+            ESP_LOGI(DEVICE_NAME, "Create event");
+            service_handle = param->create.service_handle;
+            if(service_handle == 0)
+            {
+                ESP_LOGE(DEVICE_NAME, "Failed to create service");
+                return;
+            }
+            
+            add_characteristics(gatts_if, service_handle, &char_ssid);
+            add_characteristics(gatts_if, service_handle, &char_pass);
+            add_characteristics(gatts_if, service_handle, &char_ip);
+
+            ESP_LOGI(DEVICE_NAME, "Service created with handle: %d and status: %d", param->create.service_handle, param->create.status);
+            ESP_ERROR_CHECK(esp_ble_gatts_start_service(service_handle));    
+        
+        break;
+
+        case ESP_GATTS_START_EVT:
+            ESP_LOGI(DEVICE_NAME, "Start event");
+            break;
+        
+        case ESP_GATTS_CONNECT_EVT:
+            ESP_LOGI(DEVICE_NAME, "Connect event");
+            break;
+        
+        case ESP_GATTS_DISCONNECT_EVT:
+            esp_ble_gap_start_advertising(&adv_params);
+            ESP_LOGE(DEVICE_NAME, "Disconnect event");
+            break;
+        
+        case ESP_GATTS_SET_ATTR_VAL_EVT:
+            ESP_LOGI(DEVICE_NAME, "Set attribute value event");
+            break;
+
+        default:
+            ESP_LOGI(DEVICE_NAME, "Events %d not handled", event);
+            break;
+
+    }
+}
+
+void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
+{
+    switch(event)
+    {
+        case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
+            ESP_LOGI(TAG_C, "Advertising data set complete");
+            break;
+        
+        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+            if(param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS)
+            {
+                ESP_LOGE(TAG_C, "Advertising start failed, error code %d", param->adv_start_cmpl.status);
+            }
+            else
+            {
+                ESP_LOGI(TAG_C, "Advertising start success");
+            }
+         break;
+        
+        case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
+            if(param->adv_stop_cmpl.status == ESP_BT_STATUS_SUCCESS)
+            {
+                ESP_LOGI(TAG_C, "Advertising stop success");
+            }
+            else
+            {
+                ESP_LOGE(TAG_C, "Advertising stop failed, error code %d", param->adv_stop_cmpl.status);
+            }
+            break;
+        case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
+            ESP_LOGI(TAG_C, "Update connection parameters event");
+            break;
+
+        default:
+            ESP_LOGI(TAG_C, "Event %d not handled", event);
+            break;
+    }
+}       
+
+
 
 
 #define PROFILE_NUM 1
@@ -65,33 +453,12 @@
 #define adv_config_flag      (1 << 0)
 #define BUF_MAX_SIZE 1024
 
-#define LED_PIN GPIO_NUM_2 // Need to change this to the correct GPIO pin
-
-static const char *TAG = "esp32_Kevin";
-static const char *TAG2 = "TCP_Client";
-
-static const char *payload = "Message from ESP32";
-
-typedef struct {
-    char ssid[MAX_SSID_LEN];
-    char pass[MAX_PASS_LEN];
-    char ip[MAX_IP_LEN];
-    int port;
-}esp_now_config_t;
-
-esp_now_config_t config = 
-{
-    .ssid = WIFI_SSID,
-    .pass = WIFI_PASS,
-    .ip = SERVER_IP,
-    .port = PORT,
-};
-
+/*
 char wifi_ssid[MAX_SSID_LEN];
 char wifi_pass[MAX_PASS_LEN];
 char server_ip[MAX_IP_LEN];
 char server_port[MAX_PORT_LEN];
-
+*/
 
 //Vet inte heller vad det här är, måste kolla upp
 static const uint16_t GATTS_SERVICE_UUID_TEST_A = 0x00FF;
@@ -121,35 +488,10 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
 void example_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param);
 void init_ble();
 
+static prepare_type_env_t a_prepare_write_env;
 
 
-static esp_ble_adv_params_t adv_params = {
-    .adv_int_min = 0x20,
-    .adv_int_max = 0x40,
-    .adv_type = ADV_TYPE_IND,
-    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
-    .peer_addr = {0},
-    .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
-    .channel_map = ADV_CHNL_ALL,
-    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
-};
 
-static esp_ble_adv_data_t adv_data = {
-    .set_scan_rsp = false,
-    .include_name = true,
-    .include_txpower = false,
-     .min_interval = 0x20,  
-    .max_interval = 0x40,  
-    .appearance = 0x00,
-    .manufacturer_len = 0,  
-    .p_manufacturer_data = NULL,  
-    .service_data_len = 0,
-    .p_service_data = NULL,
-    .service_uuid_len = 16,
-    .p_service_uuid = service_uuid,
-    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
-
-};
 
 struct gatts_profile_inst {
     esp_gatts_cb_t gatts_cb;
@@ -174,104 +516,11 @@ static struct gatts_profile_inst gl_profile_tab[PROFILE_NUM] = {
     },
 };
 
-static prepare_type_env_t a_prepare_write_env;
+
 
 //vet inte vad det här, måste kolla upp
-static esp_gatts_attr_db_t gatt_db[GATTS_NUM_HANDLE_TEST_A] = {
 
-    [0] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&primary_service_uuid, ESP_GATT_PERM_READ,
-            sizeof(uint16_t), sizeof(GATTS_SERVICE_UUID_TEST_A), (uint8_t *)&GATTS_SERVICE_UUID_TEST_A
-        }
-    },
-
-    // Characteristic Declaration
-    [1] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-            CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write
-        }
-    },
-
-    // Characteristic Value
-    [2] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&GATTS_CHAR_UUID_TEST_A, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-            sizeof(char_value), sizeof(char_value), (uint8_t *)char_value
-        }
-    },
-
-    // Client Characteristic Configuration Descriptor
-    [3] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&GATTS_DESCR_UUID_TEST_A, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-            sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&descr_value
-        }
-    },
-
-};
-
-void send_esp_now_config()
-{
-    esp_now_config_t config;
-    strcpy(config.ssid, wifi_ssid);
-    strcpy(config.pass, wifi_pass);
-    strcpy(config.ip, server_ip);
-    config.port = atoi(server_port);
-
-    uint8_t broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    ESP_ERROR_CHECK(esp_now_send(broadcast_mac, (uint8_t *)&config, sizeof(esp_now_config_t)));
-
-
-    esp_err_t err = esp_now_send(NULL, (uint8_t *)&config, sizeof(esp_now_config_t));
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to send ESP-NOW config");
-    }
-}
-
-void esp_now_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status)
-{
-    char mac_str[18];
-    sprintf(mac_str, "%02x:%02x:%02x:%02x:%02x:%02x", 
-            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-
-    if (status == ESP_NOW_SEND_SUCCESS)
-    {
-        ESP_LOGI(TAG, "Successfully sent ESP-NOW message to %s", mac_str);
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Failed to send ESP-NOW message to %s", mac_str);
-    }
-
-
-
-
-
-}
-
-void esp_now_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len)
-
-{
-    esp_now_config_t *config = (esp_now_config_t *)data;
-    ESP_LOGI(TAG, "Received ESP-NOW config: SSID: %s, Password: %s, IP: %s, Port: %d",
-            config->ssid, config->pass, config->ip, config->port);
-
-    strcpy(wifi_ssid, config->ssid);
-    strcpy(wifi_pass, config->pass);
-    strcpy(server_ip, config->ip);
-    sprintf(server_port, "%d", config->port);
-    snprintf(server_port, sizeof(server_port), "%d", config->port);
-
-    send_esp_now_config();
-}
-
+/*
 void update_wifi_and_server_config()
 {
     wifi_config_t wifi_config = {
@@ -296,7 +545,7 @@ void update_wifi_and_server_config()
 
 
 }
-
+*/
 static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
     switch(event)
@@ -304,6 +553,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
         case ESP_GATTS_REG_EVT:
 
             //Register the application
+           /*
             ESP_LOGI(TAG, "REGISTER_APP_EVT, status %d, app_id %d\n", param->reg.status, param->reg.app_id);
             gl_profile_tab[PROFILE_A_APP_ID].service_id.is_primary = true;
             gl_profile_tab[PROFILE_A_APP_ID].service_id.id.inst_id = 0x00;
@@ -322,8 +572,10 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
             }
             adv_config_done |= adv_config_flag;
             break;
-            
+         */
         case ESP_GATTS_READ_EVT:
+
+            /*
             ESP_LOGI(TAG, "ESP_GATTS_READ_EVT, conn_id %u, trans_id %u, handle %u",
                     (unsigned int)param->read.conn_id,
                     (unsigned int)param->read.trans_id,
@@ -340,7 +592,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
 
             esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
             break;
-            
+            */
         case ESP_GATTS_WRITE_EVT:{
             ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT, conn_id %u, trans_id %u, handle %u",
                     (unsigned int)param->write.conn_id,
@@ -554,54 +806,6 @@ void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp
     while(0);
 }
 
-void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
-{
-    switch(event)
-    {
-        case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
-            ESP_LOGI(TAG, "Advertising data set complete");
-            adv_config_done &= (~adv_config_flag);
-            if(adv_config_done == 0)
-            {
-                esp_ble_gap_start_advertising(&adv_params);
-            }
-            break;
-        
-        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
-            if(param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS)
-            {
-                ESP_LOGE(TAG, "Advertising start failed");
-            }
-            else
-            {
-                ESP_LOGI(TAG, "Advertising start success");
-            }
-         break;
-        
-        case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
-            if(param->adv_stop_cmpl.status == ESP_BT_STATUS_SUCCESS)
-            {
-                ESP_LOGI(TAG, "Advertising stop success");
-            }
-            else
-            {
-                ESP_LOGE(TAG, "Advertising stop failed");
-            }
-            break;
-        case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
-            ESP_LOGI(TAG, "Update connection parameters = %d, conn_int = %d, latency = %d, timeout = %d", 
-                param->update_conn_params.status, 
-                param->update_conn_params.conn_int, 
-                param->update_conn_params.latency, 
-                param->update_conn_params.timeout);
-            break;
-
-        default:
-            ESP_LOGI(TAG, "Event %d not handled", event);
-            break;
-    }
-}       
-
 
 void init_led();
 void turn_on_led();
@@ -634,8 +838,7 @@ void app_main(void)
 
     //Initiera ESP-NOW
     //init_esp_now();
-    esp_now_config_t config;
-    esp_now_register_recv_cb(esp_now_recv_cb);
+    
 
     // Om serverkonfigurationen saknas, skicka den via esp-now
     
@@ -675,25 +878,25 @@ void tcp_client(void *pvParameters)
         int sock = socket(addr_family, SOCK_STREAM, ip_protocol);
         if (sock < 0){
 
-            ESP_LOGE(TAG2, "Unable to create socket: errno %d", errno);
+            ESP_LOGE(TCP_TAG, "Unable to create socket: errno %d", errno);
             break;
 
         }
 
-        ESP_LOGI(TAG2, "Socket created, connecting to %s:%d", host_ip, PORT);
+        ESP_LOGI(TCP_TAG, "Socket created, connecting to %s:%d", host_ip, PORT);
 
         // Anslut till server
         
         int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
         if(err != 0)
         {
-            ESP_LOGE(TAG2, "Socket unable to connect: errno %d", errno);
+            ESP_LOGE(TCP_TAG, "Socket unable to connect: errno %d", errno);
             close(sock);
             break;
         }
 
         
-        ESP_LOGI(TAG2, "Successfully connected");
+        ESP_LOGI(TCP_TAG, "Successfully connected");
 
         
         while(1)
@@ -706,7 +909,7 @@ void tcp_client(void *pvParameters)
             int err = send(sock, payload, strlen(payload), 0);
             if (err < 0)
             {
-                ESP_LOGE(TAG2, "Error occurred during sending: errno %d", errno);
+                ESP_LOGE(TCP_TAG, "Error occurred during sending: errno %d", errno);
                 break;
             }
 
@@ -714,7 +917,7 @@ void tcp_client(void *pvParameters)
             int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
             if (len < 0) {
 
-                ESP_LOGE(TAG2, "recv failed: errno %d", errno);
+                ESP_LOGE(TCP_TAG, "recv failed: errno %d", errno);
                 break;
 
             }
@@ -722,7 +925,7 @@ void tcp_client(void *pvParameters)
             else {
                 
                 rx_buffer[len] = 0; // Null-terminera mottaget meddelande
-                ESP_LOGI(TAG2, "Received %d bytes: %s", len, rx_buffer);
+                ESP_LOGI(TCP_TAG, "Received %d bytes: %s", len, rx_buffer);
                 
                 //ESP_LOGI(TAG2, "%s", rx_buffer);
                 
@@ -741,7 +944,7 @@ void tcp_client(void *pvParameters)
         }
 
         if (sock != -1) {
-            ESP_LOGE(TAG2, "Shutting down socket and restarting...");
+            ESP_LOGE(TCP_TAG, "Shutting down socket and restarting...");
             shutdown(sock, 0);
             close(sock);
         }
@@ -1035,14 +1238,6 @@ void example_exec_write_event_env(prepare_type_env_t *prepare_write_env, esp_ble
     prepare_write_env->prepare_len = 0;
 }
 
-void init_esp_now()
-{
-    ESP_ERROR_CHECK(esp_now_init());
-    ESP_ERROR_CHECK(esp_now_register_send_cb(esp_now_send_cb));
-    ESP_ERROR_CHECK(esp_now_register_recv_cb(esp_now_recv_cb));
-    ESP_LOGI(TAG, "ESP-NOW init complete");
-
-}
 
 
 //54-32-04-01-49-f0
