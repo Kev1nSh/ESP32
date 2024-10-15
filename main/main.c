@@ -79,13 +79,13 @@ typedef struct {
     int port;
 }esp_now_config_t;
 
-esp_now_config_t config = 
+/* esp_now_config_t config = 
 {
     .ssid = WIFI_SSID,
     .pass = WIFI_PASS,
     .ip = SERVER_IP,
     .port = PORT,
-};
+}; */
 
 char wifi_ssid[MAX_SSID_LEN];
 char wifi_pass[MAX_PASS_LEN];
@@ -174,103 +174,9 @@ static struct gatts_profile_inst gl_profile_tab[PROFILE_NUM] = {
     },
 };
 
-static prepare_type_env_t a_prepare_write_env;
-
-//vet inte vad det här, måste kolla upp
-static esp_gatts_attr_db_t gatt_db[GATTS_NUM_HANDLE_TEST_A] = {
-
-    [0] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&primary_service_uuid, ESP_GATT_PERM_READ,
-            sizeof(uint16_t), sizeof(GATTS_SERVICE_UUID_TEST_A), (uint8_t *)&GATTS_SERVICE_UUID_TEST_A
-        }
-    },
-
-    // Characteristic Declaration
-    [1] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-            CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write
-        }
-    },
-
-    // Characteristic Value
-    [2] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&GATTS_CHAR_UUID_TEST_A, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-            sizeof(char_value), sizeof(char_value), (uint8_t *)char_value
-        }
-    },
-
-    // Client Characteristic Configuration Descriptor
-    [3] = {
-        {ESP_GATT_AUTO_RSP},
-        {
-            ESP_UUID_LEN_16, (uint8_t *)&GATTS_DESCR_UUID_TEST_A, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-            sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&descr_value
-        }
-    },
-
-};
-
-void send_esp_now_config()
-{
-    esp_now_config_t config;
-    strcpy(config.ssid, wifi_ssid);
-    strcpy(config.pass, wifi_pass);
-    strcpy(config.ip, server_ip);
-    config.port = atoi(server_port);
-
-    uint8_t broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    ESP_ERROR_CHECK(esp_now_send(broadcast_mac, (uint8_t *)&config, sizeof(esp_now_config_t)));
-
-
-    esp_err_t err = esp_now_send(NULL, (uint8_t *)&config, sizeof(esp_now_config_t));
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to send ESP-NOW config");
-    }
-}
-
-void esp_now_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status)
-{
-    char mac_str[18];
-    sprintf(mac_str, "%02x:%02x:%02x:%02x:%02x:%02x", 
-            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-
-    if (status == ESP_NOW_SEND_SUCCESS)
-    {
-        ESP_LOGI(TAG, "Successfully sent ESP-NOW message to %s", mac_str);
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Failed to send ESP-NOW message to %s", mac_str);
-    }
 
 
 
-
-
-}
-
-void esp_now_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len)
-
-{
-    esp_now_config_t *config = (esp_now_config_t *)data;
-    ESP_LOGI(TAG, "Received ESP-NOW config: SSID: %s, Password: %s, IP: %s, Port: %d",
-            config->ssid, config->pass, config->ip, config->port);
-
-    strcpy(wifi_ssid, config->ssid);
-    strcpy(wifi_pass, config->pass);
-    strcpy(server_ip, config->ip);
-    sprintf(server_port, "%d", config->port);
-    snprintf(server_port, sizeof(server_port), "%d", config->port);
-
-    send_esp_now_config();
-}
 
 void update_wifi_and_server_config()
 {
@@ -301,10 +207,10 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
 {
     switch(event)
     {
-        case ESP_GATTS_REG_EVT:
+        case ESP_GATTS_REG_EVT:  SEPARERA I OLIKA FUNKTIONER
 
             //Register the application
-            ESP_LOGI(TAG, "REGISTER_APP_EVT, status %d, app_id %d\n", param->reg.status, param->reg.app_id);
+         /*    ESP_LOGI(TAG, "REGISTER_APP_EVT, status %d, app_id %d\n", param->reg.status, param->reg.app_id);
             gl_profile_tab[PROFILE_A_APP_ID].service_id.is_primary = true;
             gl_profile_tab[PROFILE_A_APP_ID].service_id.id.inst_id = 0x00;
             gl_profile_tab[PROFILE_A_APP_ID].service_id.id.uuid.len = ESP_UUID_LEN_16;
@@ -322,9 +228,9 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
             }
             adv_config_done |= adv_config_flag;
             break;
-            
-        case ESP_GATTS_READ_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_READ_EVT, conn_id %u, trans_id %u, handle %u",
+             */
+        case ESP_GATTS_READ_EVT:    SEPARERA I OLIKA FUNKTIONER
+         /*    ESP_LOGI(TAG, "ESP_GATTS_READ_EVT, conn_id %u, trans_id %u, handle %u",
                     (unsigned int)param->read.conn_id,
                     (unsigned int)param->read.trans_id,
                     (unsigned int)param->read.handle);
@@ -339,7 +245,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
             rsp.attr_value.value[3] = 0xef;
 
             esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
-            break;
+            break; */
             
         case ESP_GATTS_WRITE_EVT:{
             ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT, conn_id %u, trans_id %u, handle %u",
@@ -388,33 +294,13 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
             break;
         
 
-        case ESP_GATTS_CONNECT_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT, conn_id %d, remote " ESP_BD_ADDR_STR, param->connect.conn_id, ESP_BD_ADDR_HEX(param->connect.remote_bda));
-
-            
+        case ESP_GATTS_CONNECT_EVT:  SEPARERA HÄR OCCKSÅ
+            ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT, conn_id %d, remote " ESP_BD_ADDR_STR, param->connect.conn_id, ESP_BD_ADDR_HEX(param->connect.remote_bda));      
             //Store the connection id and remote bluetooth device address
             gl_profile_tab[PROFILE_A_APP_ID].conn_id = param->connect.conn_id;
             memcpy(gl_profile_tab[PROFILE_A_APP_ID].remote_bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
             
-            esp_ble_conn_update_params_t conn_params = {0};
-            memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
-            
-            //Update the connection parameters
-            conn_params.latency = 0;
-            conn_params.max_int = 0x30;    // max_int = 0x30*1.25ms = 40ms
-            conn_params.min_int = 0x10;    // min_int = 0x10*1.25ms = 20ms
-            conn_params.timeout = 400;    // timeout = 400*10ms = 4000ms
-
-            ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT, conn_id %d, remote %02x:%02x:%02x:%02x:%02x:%02x", 
-                    param->connect.conn_id, 
-                    param->connect.remote_bda[0], 
-                    param->connect.remote_bda[1], 
-                    param->connect.remote_bda[2], 
-                    param->connect.remote_bda[3], 
-                    param->connect.remote_bda[4], 
-                    param->connect.remote_bda[5]);
-                gl_profile_tab[PROFILE_A_APP_ID].conn_id = param->connect.conn_id;
-                break;
+            break;
 
         case ESP_GATTS_DISCONNECT_EVT:  
             ESP_LOGI(TAG, "ESP_GATTS_DISCONNECT_EVT, reason %d", param->disconnect.reason);
@@ -479,6 +365,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
         case ESP_GATTS_STOP_EVT:
 
         case ESP_GATTS_ADD_CHAR_EVT:
+
             uint16_t length = 0;
             const uint8_t *prf_char;
 
@@ -1034,158 +921,3 @@ void example_exec_write_event_env(prepare_type_env_t *prepare_write_env, esp_ble
     }
     prepare_write_env->prepare_len = 0;
 }
-
-void init_esp_now()
-{
-    ESP_ERROR_CHECK(esp_now_init());
-    ESP_ERROR_CHECK(esp_now_register_send_cb(esp_now_send_cb));
-    ESP_ERROR_CHECK(esp_now_register_recv_cb(esp_now_recv_cb));
-    ESP_LOGI(TAG, "ESP-NOW init complete");
-
-}
-
-
-//54-32-04-01-49-f0
-/*
-    EXTRA FUNCTIONS THAT I MAY WANT TO USE LATER OR IMPLEMENT
-
-    Wi-Fi event handler
-    OSäker om jag behöver denna delen
-    static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) 
-    {
-        if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) 
-        {
-            ESP_LOGI(TAG, "Wi-Fi disconnected, trying to reconnect...");
-            esp_wifi_connect();
-        }   
-        else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) 
-        {
-            ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-            ESP_LOGI(TAG, "Got IP: %s", ip4addr_ntoa(&event->ip_info.ip));
-        }
-    }
-
-    //Komma tllbak till denna senare
-    //extern esp_err_t esp_ble_gap_config_adv_data(esp_ble_adv_data_t *adv_data);
-
-    // Connect to a Wi-Fi network with the specified SSID and password
-    // Lite osäker på om jag behöver denna funktionen
-
-    //void wifi_connect_with_credentials(const char *ssid, const char *password);
-
-    void wifi_connect_with_credentials(const char *ssid, const char *password)
-    {
-        wifi_config_t wifi_config = 
-        {
-            .sta = {
-            .ssid = ""
-            .password = "",
-        },
-    };
-
-    strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());  
-    ESP_ERROR_CHECK(esp_wifi_connect());
-
-
-    }
-
-    
-            case ESP_GATTS_WRITE_EVT:
-            if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle)
-            {
-            
-                char ssid[32] = {0};
-                char password[64] = {0};
-                char received_data[96] = {0};
-
-                //Copy the received data to a local buffer
-                memcpy(received_data, param->write.value, param->write.len);
-
-                //Find the delimiter
-                char *delimiter = strchr(received_data, ':');
-                if (delimiter != NULL)
-                {
-                    
-                    //Extract the SSID
-                    size_t ssid_len = delimiter - received_data;
-                    strncpy(ssid, received_data, ssid_len);
-                    ssid[ssid_len] = '\0'; 
-
-                    //Extract the password
-                    strncpy(password, delimiter + 1, param->write.len - ssid_len - 1);
-                    password[param->write.len - ssid_len - 1] = '\0';
-
-                    //Print the received data
-                    ESP_LOGI(TAG, "Received SSID: %s", ssid);
-                    ESP_LOGI(TAG, "Received password: %s", password);
-
-                    //Connect to the Wi-Fi network
-
-                    //wifi_connect_with_credentials(ssid, password);
-                    
-                    //Kanske jag kan importera credentials till min wifi_connect funktion
-                    
-                    wifi_config_t wifi_config = {
-                        .sta = {
-                            .ssid = ssid,
-                            .password = password,
-                        },
-                    };  
-                    
-                }
-            
-
-    */
-
-/*
- if (gl_profile_tab[PROFILE_A_APP_ID].descr_handle == param->write.handle && param->write.len == 2){
-                        uint16_t descr_value = param->write.value[1]<<8 | param->write.value[0];
-                        if (descr_value == 0x0001){
-                            //Kan strulas här
-                            if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_NOTIFY){
-                                ESP_LOGI(TAG, "notify enable");
-                                uint8_t notify_data[15];
-                                for (int i = 0; i < sizeof(notify_data); ++i)
-                                {
-                                    notify_data[i] = i%0xff;
-                                }
-                                // the size of notify_data[] need less than MTU size
-                                esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
-                                                            gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
-                                                            sizeof(notify_data), 
-                                                            notify_data, false);
-                            }
-                    
-                        }else if(descr_value == 0x0002){
-                            if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_INDICATE){
-                                ESP_LOGI(TAG, "indicate enable");
-                                uint8_t indicate_data[15];
-                                for (int i = 0; i < sizeof(indicate_data); ++i)
-                                {
-                                    indicate_data[i] = i%0xff;
-                                }
-                                // the size of indicate_data[] need less than MTU size
-                                esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
-                                                            gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
-                                                            sizeof(indicate_data), 
-                                                            indicate_data, true);
-                            }
-                        }
-                        else if(descr_value == 0x0000)
-                        {
-                            ESP_LOGI(TAG, "notify/indicate disable ");
-                        }
-                        else
-                        {
-                            ESP_LOGE(TAG, "unknown value");
-                        }
-                    }
-                }
-                example_write_event_env(gatts_if, &a_prepare_write_env, param);
-                break;
-*/

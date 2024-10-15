@@ -14,5 +14,6 @@
     "idf.pythonBinPathWin": "C:\\Users\\AuPx\\.espressif\\python_env\\idf5.3_py3.11_env\\Scripts\\python.exe",
     "idf.toolsPathWin": "C:\\Users\\AuPx\\.espressif",
     "idf.portWin": "COM6",
-    "idf.flashType": "UART"
+    "idf.flashType": "UART",
+    "C_Cpp.errorSquiggles": "disabled"
 }
