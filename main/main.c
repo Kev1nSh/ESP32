@@ -9,7 +9,7 @@
 #include "lwip/sockets.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
-#include <lwip/netdb.h>
+#include "lwip/netdb.h"
 #include <string.h>
 #include <netdb.h>
 #include <errno.h>
@@ -18,31 +18,37 @@
 #include <unistd.h>
 #include "sdkconfig.h"
 #include "sys/socket.h"
-#include "esp_event.h"
+//#include "esp_event.h"
 #include "esp_log.h"
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include <inttypes.h>
-#include <nvs_flash.h>
+#include "nvs_flash.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_continuous.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc_cal.h"
 #include "driver/gpio.h"
+#include "driver/adc.h"
+#include "driver/ledc.h"
+#include "driver/uart.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
-#include "esp_gatT_common_api.h"
+//#include "esp_gatT_common_api.h"
+#include "esp_gatt_defs.h" 
 #include "esp_gatts_api.h"
+#include "esp_gap_bt_api.h"
 #include "esp_gap_ble_api.h"
 #include "esp_bt_defs.h"
 #include "esp_bt_device.h"
 #include "esp_bt_defs.h"
 #include "esp_err.h"
 #include <inttypes.h>
-#include "esp_now.h"
 
 #define DEVICE_NAME "ESP32_BLE"
 
@@ -65,8 +71,11 @@
 #define CHAR_PASS_UUID 0x1224
 #define CHAR_IP_UUID 0x1225
 
-#define TAG_C "GAP EVENT"
-#define TAG_G "GATT EVENT"
+#define GAP "GAP EVENT"
+#define GATT "GATT EVENT"
+#define payload "Message from ESP32"
+
+#define MAX_CHAR_LEN 128
 
 #define ESP_GATT_UUID_CHAR_DESCRIPTION 0x2901
 
@@ -100,8 +109,6 @@ static esp_ble_adv_params_t adv_params = {
     .adv_int_max = 0x40,
     .adv_type = ADV_TYPE_IND,
     .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
-    .peer_addr = {0},
-    .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .channel_map = ADV_CHNL_ALL,
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
@@ -168,7 +175,7 @@ void create_ble_service(esp_gatt_if_t gatts_if)
     res = esp_ble_gatts_create_service(gatts_if, &service_id, 10);
     if (res != ESP_OK)
     {
-        ESP_LOGE(TAG_G, "Failed to create service, error code %d", res);
+        ESP_LOGE(GATT, "Failed to create service, error code %d", res);
         return;
     }
 }
@@ -178,12 +185,12 @@ void add_characteristics(esp_gatt_if_t gatts_if, uint16_t service_handle, charac
 
     esp_err_t res;
     esp_gatt_char_prop_t char_property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE;
-    ESP_LOGI(TAG_G, "Adding characteristic with UUID %x, attr_value length: %d", characteristic->uuid.uuid.uuid16, characteristic->attr_value.attr_len);
+    ESP_LOGI(GATT, "Adding characteristic with UUID %x, attr_value length: %d", characteristic->uuid.uuid.uuid16, characteristic->attr_value.attr_len);
 
     //Idk if implement this is necessary
     if (characteristic->attr_value.attr_len > characteristic->attr_value.attr_max_len)
     {
-        ESP_LOGE(TAG_G, "Attribute length exceeds maximum length, MAX LENGTH: %d, ACTUAL LENGTH: %d", characteristic->attr_value.attr_max_len, characteristic->attr_value.attr_len);
+        ESP_LOGE(GATT, "Attribute length exceeds maximum length, MAX LENGTH: %d, ACTUAL LENGTH: %d", characteristic->attr_value.attr_max_len, characteristic->attr_value.attr_len);
         return;
     }
     
@@ -201,8 +208,8 @@ void setup_ble_adv_data()
 {
 
     uint8_t service_uuid [16] = {0};
-    service_uuid[0] = (uint8_t) (SERVICE_UUID & 0x00FF);
-    service_uuid[1] = (uint8_t) ((SERVICE_UUID  >> 8) & 0x00FF);
+    service_uuid[0] = (uint8_t) (SERVICE_UUID & 0xFF);
+    service_uuid[1] = (uint8_t) ((SERVICE_UUID  >> 8) & 0xFF);
 
    
     esp_ble_adv_data_t adv_data = {
@@ -238,16 +245,15 @@ void add_descriptor(esp_gatt_if_t gatts_if, uint16_t service_handle, const char 
     
     esp_attr_value_t descr_value = {
         .attr_max_len = strlen(description) + 1, // +1 for null terminator
-        .attr_len = strlen(description) + 1,
+        .attr_len = strlen(description)+ 1,
         .attr_value = (uint8_t *)description,
     };  
 
-    ESP_LOGI(TAG_G, "Adding descriptor with description: %s", description);
+    ESP_LOGI(GATT, "Adding descriptor with description: %s", description);
     res = esp_ble_gatts_add_char_descr(service_handle, &descr_uuid, ESP_GATT_PERM_READ, &descr_value, NULL);
     if (res != ESP_OK)
     {
-        ESP_LOGE(TAG_G, "Failed to add descriptor, error code %x", res);
-        return;
+        ESP_LOGE(GATT, "Failed to add descriptor, error code %x", res);
     }
 }
 
@@ -260,12 +266,10 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
         case ESP_GATTS_REG_EVT:
             ESP_LOGI(DEVICE_NAME, "Register event");
             create_ble_service(gatts_if);
-
             break;
             
-
         case ESP_GATTS_READ_EVT:
-            ESP_LOGI(TAG_G, "ESP_GATTS_READ_EVT, handle: %d", param->read.handle);
+            ESP_LOGI(DEVICE_NAME, "ESP_GATTS_READ_EVT, handle: %d", param->read.handle);
 
             esp_gatt_rsp_t rsp;
             memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
@@ -273,25 +277,25 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             
             if(param->read.handle == char_ssid_handle)
             {
-                ESP_LOGI(TAG_G, "Reading SSID characteristic");
+                ESP_LOGI(DEVICE_NAME, "Reading SSID characteristic");
                 rsp.attr_value.len = strlen(ssid);
-                memccpy(rsp.attr_value.value, ssid, 0, rsp.attr_value.len);
+                memcpy(rsp.attr_value.value, ssid, rsp.attr_value.len);
             }
             else if (param->read.handle == char_pass_handle)
             {
-                ESP_LOGI(TAG_G, "Reading password characteristic");
+                ESP_LOGI(DEVICE_NAME, "Reading password characteristic");
                 rsp.attr_value.len = strlen(pass);
-                memccpy(rsp.attr_value.value, pass, 0, rsp.attr_value.len);
+                memcpy(rsp.attr_value.value, pass, rsp.attr_value.len);
             }
             else if (param->read.handle == char_ip_handle)
             {
-                ESP_LOGI(TAG_G, "Reading IP characteristic");
+                ESP_LOGI(DEVICE_NAME, "Reading IP characteristic");
                 rsp.attr_value.len = strlen(ip);
-                memccpy(rsp.attr_value.value, ip, 0, rsp.attr_value.len);
+                memcpy(rsp.attr_value.value, ip, rsp.attr_value.len);
             }
             else
             {
-                ESP_LOGE(TAG_G, "Unknown handle: %d", param->read.handle);
+                ESP_LOGE(DEVICE_NAME, "Unknown handle: %d", param->read.handle);
                 rsp.attr_value.len = 0;
             }
 
@@ -299,22 +303,36 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                     param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
             if (res != ESP_OK)
             {
-                ESP_LOGE(TAG_G, "Failed to send response, error code %x", res);
+                ESP_LOGE(DEVICE_NAME, "Failed to send response, error code %x", res);
             }
             else
             {
-                ESP_LOGI(TAG_G, "Response sent successfully");
+                ESP_LOGI(DEVICE_NAME, "Response sent successfully");
             }
             break;
         
         case ESP_GATTS_WRITE_EVT:
+
+            ESP_LOGI(DEVICE_NAME, "Write event, handle: %d, value len: %d, value :", param->write.handle, param->write.len);
+            esp_log_buffer_hex(DEVICE_NAME, param->write.value, param->write.len); 
+
+            if(param->write.len > MAX_CHAR_LEN)
+            {
+                ESP_LOGE(DEVICE_NAME, "Data exceeds maximum length");
+                return;
+            }
+            else
+            {
+                ESP_LOGI(DEVICE_NAME, "Value: %s", param->write.value);
+            }
+
             if(param->write.handle == char_ssid_handle)
             {
                 memset(ssid, 0, sizeof(ssid));
                 memcpy(ssid, param->write.value, param->write.len);
                 ssid[param->write.len] = '\0';
                 
-                ESP_LOGI(TAG_G, "SSID: %s", ssid);
+                //ESP_LOGI(DEVICE_NAME, "SSID: %s", ssid);
                 printf("SSID recv: %s\n", ssid);
             }
             else if (param->write.handle == char_pass_handle)
@@ -323,7 +341,7 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                 memcpy(pass, param->write.value, param->write.len);
                 pass[param->write.len] = '\0';
 
-                ESP_LOGI(TAG_G, "Password: %s", pass);
+                //ESP_LOGI(DEVICE_NAME, "Password: %s", pass);
                 printf("Password recv: %.*s\n", param->write.len, param->write.value);
 
                 credentials_received = 1;
@@ -333,7 +351,7 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                 memset(ip, 0, sizeof(ip));
                 memcpy(ip, param->write.value, param->write.len);
                 ip[param->write.len] = '\0';
-                ESP_LOGI(TAG_G, "IP: %s", ip);
+                //ESP_LOGI(DEVICE_NAME, "IP: %s", ip);
                 printf("IP recv: %.*s\n", param->write.len, param->write.value);
             }
             
@@ -388,8 +406,21 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             break;
         
         case ESP_GATTS_DISCONNECT_EVT:
-            esp_ble_gap_start_advertising(&adv_params);
+            
             ESP_LOGE(DEVICE_NAME, "Disconnect event");
+            esp_err_t ret = esp_ble_gap_start_advertising(&adv_params);
+            if (ret)
+            {
+                ESP_LOGE(DEVICE_NAME, "Failed to start advertising, error code %x", ret);
+            }
+            else
+            {
+                ESP_LOGI(DEVICE_NAME, "Advertising started");
+            }
+            break;
+        
+        case ESP_GATTS_RESPONSE_EVT:
+            ESP_LOGI(DEVICE_NAME, "Response event");
             break;
         
         case ESP_GATTS_SET_ATTR_VAL_EVT:
@@ -408,416 +439,74 @@ void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     switch(event)
     {
         case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
-            ESP_LOGI(TAG_C, "Advertising data set complete");
+            ESP_LOGI(GAP, "Advertising data set complete");
             break;
         
         case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
             if(param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS)
             {
-                ESP_LOGE(TAG_C, "Advertising start failed, error code %d", param->adv_start_cmpl.status);
+                ESP_LOGE(GAP, "Advertising start failed, error code %d", param->adv_start_cmpl.status);
             }
             else
             {
-                ESP_LOGI(TAG_C, "Advertising start success");
+                ESP_LOGI(GAP, "Advertising start success");
             }
          break;
         
         case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
             if(param->adv_stop_cmpl.status == ESP_BT_STATUS_SUCCESS)
             {
-                ESP_LOGI(TAG_C, "Advertising stop success");
+                ESP_LOGI(GAP, "Advertising stop success");
             }
             else
             {
-                ESP_LOGE(TAG_C, "Advertising stop failed, error code %d", param->adv_stop_cmpl.status);
+                ESP_LOGE(GAP, "Advertising stop failed, error code %d", param->adv_stop_cmpl.status);
             }
             break;
         case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
-            ESP_LOGI(TAG_C, "Update connection parameters event");
+            ESP_LOGI(GAP, "Update connection parameters event");
             break;
 
         default:
-            ESP_LOGI(TAG_C, "Event %d not handled", event);
+            ESP_LOGI(GAP, "Event %d not handled", event);
             break;
     }
 }       
 
+void credentials_received_task()
+{   
+    printf("Credentials received\n");
 
-
-
-#define PROFILE_NUM 1
-#define PROFILE_A_APP_ID 0
-#define SVC_INST_ID 0
-#define GATTS_NUM_HANDLE_TEST_A 4
-#define GATTS_DEMO_CHAR_VAL_LEN_MAX 0x40
-#define adv_config_flag      (1 << 0)
-#define BUF_MAX_SIZE 1024
-
-/*
-char wifi_ssid[MAX_SSID_LEN];
-char wifi_pass[MAX_PASS_LEN];
-char server_ip[MAX_IP_LEN];
-char server_port[MAX_PORT_LEN];
-*/
-
-//Vet inte heller vad det här är, måste kolla upp
-static const uint16_t GATTS_SERVICE_UUID_TEST_A = 0x00FF;
-static const uint16_t GATTS_CHAR_UUID_TEST_A = 0xFF01;
-static const uint16_t GATTS_DESCR_UUID_TEST_A = 0x3333;
-
-static const uint16_t primary_service_uuid = GATTS_SERVICE_UUID_TEST_A;
-static const uint16_t character_declaration_uuid = 0x2803;
-#define CHAR_DECLARATION_SIZE (sizeof(uint8_t))
-static const uint8_t char_prop_read_write = ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE;
-static const uint16_t descr_value = GATTS_DESCR_UUID_TEST_A;
-
-static uint8_t char_value[] = {0x11, 0x22, 0x33};
-//static uint16_t char_value_len = sizeof(char_value);
-static uint8_t service_uuid[16] = {
-   
-    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
-static uint8_t adv_config_done;
-
-typedef struct{
-    uint8_t *prepare_buf;
-    int prepare_len;
-}prepare_type_env_t;
-
-static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
-void example_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param);
-void init_ble();
-
-static prepare_type_env_t a_prepare_write_env;
-
-
-
-
-struct gatts_profile_inst {
-    esp_gatts_cb_t gatts_cb;
-    uint16_t gatts_if;
-    uint16_t app_id;
-    uint16_t conn_id;
-    uint16_t service_handle;
-    esp_gatt_srvc_id_t service_id;
-    uint16_t char_handle;
-    esp_bt_uuid_t char_uuid;
-    esp_gatt_perm_t perm;
-    esp_gatt_char_prop_t property;
-    uint16_t descr_handle;
-    esp_bt_uuid_t descr_uuid;
-    esp_bd_addr_t remote_bda; // Add this line
-};
-
-static struct gatts_profile_inst gl_profile_tab[PROFILE_NUM] = {
-    [PROFILE_A_APP_ID] = {
-        .gatts_cb = gatts_profile_a_event_handler,
-        .gatts_if = ESP_GATT_IF_NONE,       /* Not get the gatt_if, so initial is ESP_GATT_IF_NONE */
-    },
-};
-
-
-
-//vet inte vad det här, måste kolla upp
-
-/*
-void update_wifi_and_server_config()
-{
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = "",
-            .password = "",
-        },
-    };
-
-    strncpy((char *)wifi_config.sta.ssid, wifi_ssid, sizeof(wifi_config.sta.ssid));
-    strncpy((char *)wifi_config.sta.password, wifi_pass, sizeof(wifi_config.sta.password));
-
-    esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
-    esp_wifi_connect();
-
-    //Uppdatera TCP-klientanslutning med nya server IP och port
-
-    int new_port = atoi(server_port);
-
-    // Anslut till servern med den nya IP och port
-
-
-
-}
-*/
-static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
-{
-    switch(event)
+    while(1)
     {
-        case ESP_GATTS_REG_EVT:
-
-            //Register the application
-           /*
-            ESP_LOGI(TAG, "REGISTER_APP_EVT, status %d, app_id %d\n", param->reg.status, param->reg.app_id);
-            gl_profile_tab[PROFILE_A_APP_ID].service_id.is_primary = true;
-            gl_profile_tab[PROFILE_A_APP_ID].service_id.id.inst_id = 0x00;
-            gl_profile_tab[PROFILE_A_APP_ID].service_id.id.uuid.len = ESP_UUID_LEN_16;
-            gl_profile_tab[PROFILE_A_APP_ID].service_id.id.uuid.uuid.uuid16 = GATTS_SERVICE_UUID_TEST_A;
-
-        
-            esp_ble_gatts_create_attr_tab(gatt_db, gatts_if, GATTS_NUM_HANDLE_TEST_A, SVC_INST_ID);
-            esp_ble_gatts_create_service(gatts_if, &gl_profile_tab[PROFILE_A_APP_ID].service_id, GATTS_NUM_HANDLE_TEST_A);
-            esp_ble_gap_set_device_name("ESP32_BLE");
-    
-            //Configure the adv data
-            esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
-            if (ret){
-                ESP_LOGE(TAG, "config adv data failed, error code = %x", ret);
-            }
-            adv_config_done |= adv_config_flag;
-            break;
-         */
-        case ESP_GATTS_READ_EVT:
-
-            /*
-            ESP_LOGI(TAG, "ESP_GATTS_READ_EVT, conn_id %u, trans_id %u, handle %u",
-                    (unsigned int)param->read.conn_id,
-                    (unsigned int)param->read.trans_id,
-                    (unsigned int)param->read.handle);
-            esp_gatt_rsp_t rsp;
-
-            memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
-            rsp.attr_value.handle = param->read.handle;
-            rsp.attr_value.len = 4;
-            rsp.attr_value.value[0] = 0xde;
-            rsp.attr_value.value[1] = 0xed;
-            rsp.attr_value.value[2] = 0xbe;
-            rsp.attr_value.value[3] = 0xef;
-
-            esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id, ESP_GATT_OK, &rsp);
-            break;
-            */
-        case ESP_GATTS_WRITE_EVT:{
-            ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT, conn_id %u, trans_id %u, handle %u",
-                    (unsigned int)param->write.conn_id,
-                    (unsigned int)param->write.trans_id,
-                    (unsigned int)param->write.handle); 
-
-           
-            if(!param->write.is_prep){
-                ESP_LOGI(TAG, "GATT_WRITE_EVT, value len %d, value :", param->write.len);
-                esp_log_buffer_hex(TAG, param->write.value, param->write.len);
-                
-                if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle)
-                {
-                    memccpy(wifi_ssid, param -> write.value, 0, param -> write.len);
-                    wifi_ssid[param -> write.len] = '\0';
-                    ESP_LOGI(TAG, "SSID: %s", wifi_ssid);
-
-                }
-                // Här kna man ta emot lösenordet
-                
-            }
-            example_write_event_env(gatts_if, &a_prepare_write_env, param);
-            break;
-        }
-        case ESP_GATTS_EXEC_WRITE_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_EXEC_WRITE_EVT");
-            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
-            example_write_event_env(gatts_if, &a_prepare_write_env, param);
-            break;
-
-        case ESP_GATTS_RESPONSE_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_RESPONSE_EVT, status =  %d, handle =  %d", param->rsp.status, param->rsp.handle);    
-            
-            //Check the status of the response
-            if (param->rsp.status != ESP_GATT_OK)
-            {
-                ESP_LOGI(TAG, "Response failed with status %d", param->rsp.status);
-                //Här kan jag skriva kod för att hantera om responsen misslyckas
-            }
-            else
-            {
-                ESP_LOGI(TAG, "Response successful for handle %d", param->rsp.handle);
-                //Här kan jag skriva kod för att hantera om responsen lyckas
-            }
-            break;
-        
-
-        case ESP_GATTS_CONNECT_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT, conn_id %d, remote " ESP_BD_ADDR_STR, param->connect.conn_id, ESP_BD_ADDR_HEX(param->connect.remote_bda));
-
-            
-            //Store the connection id and remote bluetooth device address
-            gl_profile_tab[PROFILE_A_APP_ID].conn_id = param->connect.conn_id;
-            memcpy(gl_profile_tab[PROFILE_A_APP_ID].remote_bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
-            
-            esp_ble_conn_update_params_t conn_params = {0};
-            memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
-            
-            //Update the connection parameters
-            conn_params.latency = 0;
-            conn_params.max_int = 0x30;    // max_int = 0x30*1.25ms = 40ms
-            conn_params.min_int = 0x10;    // min_int = 0x10*1.25ms = 20ms
-            conn_params.timeout = 400;    // timeout = 400*10ms = 4000ms
-
-            ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT, conn_id %d, remote %02x:%02x:%02x:%02x:%02x:%02x", 
-                    param->connect.conn_id, 
-                    param->connect.remote_bda[0], 
-                    param->connect.remote_bda[1], 
-                    param->connect.remote_bda[2], 
-                    param->connect.remote_bda[3], 
-                    param->connect.remote_bda[4], 
-                    param->connect.remote_bda[5]);
-                gl_profile_tab[PROFILE_A_APP_ID].conn_id = param->connect.conn_id;
-                break;
-
-        case ESP_GATTS_DISCONNECT_EVT:  
-            ESP_LOGI(TAG, "ESP_GATTS_DISCONNECT_EVT, reason %d", param->disconnect.reason);
-            ESP_LOGI(TAG, "ESP_GATTS_DISCONNECT_EVT, conn_id %d, remote " ESP_BD_ADDR_STR, param->disconnect.conn_id, ESP_BD_ADDR_HEX(param->disconnect.remote_bda));
-            
-            //Clear the connection id and remote bluetooth device address
-            gl_profile_tab[PROFILE_A_APP_ID].conn_id = 0;
-            memset(gl_profile_tab[PROFILE_A_APP_ID].remote_bda, 0, sizeof(esp_bd_addr_t));
-
-            //Restart advertising
-            esp_ble_gap_start_advertising(&adv_params); 
-            
-            break;
-
-        case ESP_GATTS_CREATE_EVT: 
-            ESP_LOGI(TAG, "ESP_GATTS_CREATE_EVT, status %d, service_handle %d\n", param->create.status, param->create.service_handle);
-            if(param->create.status == ESP_GATT_OK)
-            {
-               
-                gl_profile_tab[PROFILE_A_APP_ID].service_handle = param->create.service_handle;
-                gl_profile_tab[PROFILE_A_APP_ID].char_uuid.len = ESP_UUID_LEN_16;
-                gl_profile_tab[PROFILE_A_APP_ID].char_uuid.uuid.uuid16 = GATTS_CHAR_UUID_TEST_A;
-
-                esp_gatt_char_prop_t a_property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE;
-
-                //Logga om service skapades
-                esp_err_t start_service_ret = esp_ble_gatts_start_service(gl_profile_tab[PROFILE_A_APP_ID].service_handle);
-                if (start_service_ret != ESP_OK){
-                    ESP_LOGE(TAG, "start service failed, error code = %x", start_service_ret);
-                }
-                
-                a_property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_NOTIFY;	
-            
-                esp_attr_value_t char_val = {
-                .attr_max_len = GATTS_DEMO_CHAR_VAL_LEN_MAX,
-                .attr_len = sizeof(char_value),
-                .attr_value = char_value,
-                };
-            
-
-            
-                esp_err_t add_char_ret =
-                esp_ble_gatts_add_char(gl_profile_tab[PROFILE_A_APP_ID].service_handle,
-                                        &gl_profile_tab[PROFILE_A_APP_ID].char_uuid,
-                                        ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-                                        a_property,
-                                        &char_val,
-                                        NULL);
-            
-                if (add_char_ret != ESP_OK){
-                    ESP_LOGE(TAG, "add char failed, error code =%x", add_char_ret);
-                }
-                
-            }   
-            else {
-                ESP_LOGE(TAG, "Service creation failed, status %d", param->create.status); 
-            }
-            break;
-
-        case ESP_GATTS_START_EVT:
-
-        case ESP_GATTS_STOP_EVT:
-
-        case ESP_GATTS_ADD_CHAR_EVT:
-            uint16_t length = 0;
-            const uint8_t *prf_char;
-
-            ESP_LOGI(TAG, "ADD_CHAR_EVT, status %d,  attr_handle %d, service_handle %d\n", 
-                param->add_char.status, param->add_char.attr_handle, param->add_char.service_handle);
-                gl_profile_tab[PROFILE_A_APP_ID].char_handle = param->add_char.attr_handle;
-                gl_profile_tab[PROFILE_A_APP_ID].descr_uuid.len = ESP_UUID_LEN_16;
-                gl_profile_tab[PROFILE_A_APP_ID].descr_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
-                esp_err_t get_attr_ret = esp_ble_gatts_get_attr_value(param->add_char.attr_handle, &length, &prf_char);
-                if (get_attr_ret == ESP_FAIL){
-                    ESP_LOGE(TAG, "ILEGAL HANDLE =%x", get_attr_ret);
-                }
-            
-            ESP_LOGI(TAG, "the gatts demo char length = %x\n", length);
-            for(int i = 0; i < length; i++){
-                ESP_LOGI(TAG, "prf_char[%x] =%x\n", i, prf_char[i]);
-            }
-            esp_err_t add_descr_ret = esp_ble_gatts_add_char_descr(
-                                    gl_profile_tab[PROFILE_A_APP_ID].service_handle,
-                                    &gl_profile_tab[PROFILE_A_APP_ID].descr_uuid,
-                                    ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-                                    NULL, NULL);
-            if (add_descr_ret){
-                ESP_LOGE(TAG, "add char descr failed, error code =%x", add_descr_ret);
-            }
-            break;
-        
-        case ESP_GATTS_ADD_CHAR_DESCR_EVT:
-            ESP_LOGI(TAG, "ADD_DESCR_EVT, status %d, attr_handle %d, service_handle %d\n", 
-                param->add_char.status, param->add_char.attr_handle, param->add_char.service_handle);
-            break;
-
-
-
-        default:
-         ESP_LOGI(TAG, "Event %d not handled", event);
-          break;
-
-    
-    }
-
-}
-
-void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
-{
-    if(event ==  ESP_GATTS_REG_EVT)
-    {
-        if(param->reg.status == ESP_GATT_OK)
+        if (credentials_received == 1)
         {
-            gl_profile_tab[param->reg.app_id].gatts_if = gatts_if;
-        }   
+            //wifi_finish_init();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            credentials_received = 0;
+        }
         else
         {
-            ESP_LOGI(TAG, "Reg app failed, app_id %04x, status %d\n", param->reg.app_id, param->reg.status);
-            return;
+            printf("Waiting for credentials\n");
         }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
     
-    do 
-    {
-        int idx;
-        for(idx = 0; idx < PROFILE_NUM; idx++)
-        {
-            if(gatts_if == ESP_GATT_IF_NONE || gatts_if == gl_profile_tab[idx].gatts_if)
-            {
-                if(gl_profile_tab[idx].gatts_cb)
-                {
-                    gl_profile_tab[idx].gatts_cb(event, gatts_if, param);
-                }
-            }
-        }
-    }
-    while(0);
 }
 
-
+//oid init_ble();
 void init_led();
 void turn_on_led();
 void turn_off_led();
 void tcp_client(void *pvParameters);
 int read_photo_sensor();
 void wifi_connect();
-void init_esp_now();
 
 
 void app_main(void)
 {
+
+    init_characteristics();
 
     init_led();
 
@@ -829,18 +518,28 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-   
     wifi_connect(); 
-
-    init_ble();
-
-    xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
-
-    //Initiera ESP-NOW
-    //init_esp_now();
+    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
+    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
+    ESP_ERROR_CHECK(esp_bluedroid_init());
+    ESP_ERROR_CHECK(esp_bluedroid_enable());
+    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(ble_gatts_event_handler));
+    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
+    esp_ble_gatts_app_register(0);
     
+    esp_ble_gap_set_device_name(DEVICE_NAME);
 
-    // Om serverkonfigurationen saknas, skicka den via esp-now
+    setup_ble_adv_data();
+    esp_ble_gap_start_advertising(&adv_params);
+    
+    ESP_LOGI(DEVICE_NAME, "BLE init complete");
+    //init_ble();
+
+
+    //xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
+
     
 
 }
@@ -941,6 +640,8 @@ void tcp_client(void *pvParameters)
 
             }
 
+
+
         }
 
         if (sock != -1) {
@@ -1004,22 +705,22 @@ void wifi_connect()
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
-
+/*
 void init_ble()
 {
     esp_err_t ret;
 
     //Check if the BT controller is already enabled and disable it if it is
     if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
-    ESP_LOGI(TAG, "Bluetooth controller already enabled, disabling first");
+    ESP_LOGI(DEVICE_NAME, "Bluetooth controller already enabled, disabling first");
     ret = esp_bt_controller_disable();
     if (ret) {
-        ESP_LOGE(TAG, "Bluetooth controller disable failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(DEVICE_NAME, "Bluetooth controller disable failed: %s", esp_err_to_name(ret));
         return;
     }
     ret = esp_bt_controller_deinit();
     if (ret) {
-        ESP_LOGE(TAG, "Bluetooth controller deinitialize failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(DEVICE_NAME, "Bluetooth controller deinitialize failed: %s", esp_err_to_name(ret));
         return;
     }
     }   
@@ -1027,20 +728,20 @@ void init_ble()
     //Check if the bluedroid stack is already enabled and disable it if it is
     if(esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED){
 
-        ESP_LOGI(TAG, "Bluedroid stack already enabled, disabling first");
+        ESP_LOGI(DEVICE_NAME, "Bluedroid stack already enabled, disabling first");
         ret = esp_bluedroid_disable();
         if (ret) {
-            ESP_LOGE(TAG, "Bluedroid stack disable failed: %s", esp_err_to_name(ret));
+            ESP_LOGE(DEVICE_NAME, "Bluedroid stack disable failed: %s", esp_err_to_name(ret));
             return;
         }
     }
     //Check if the bluedroid stack is already initialized and deinitialize it if it is
     if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED){
 
-        ESP_LOGI(TAG, "Bluedroid stack already initialized, deinitializing first");
+        ESP_LOGI(DEVICE_NAME, "Bluedroid stack already initialized, deinitializing first");
         ret = esp_bluedroid_deinit();
         if (ret) {
-            ESP_LOGE(TAG, "Bluedroid stack deinitialize failed: %s", esp_err_to_name(ret));
+            ESP_LOGE(DEVICE_NAME, "Bluedroid stack deinitialize failed: %s", esp_err_to_name(ret));
             return;
         }
 
@@ -1050,14 +751,14 @@ void init_ble()
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);
     if (ret) {
-        ESP_LOGE(TAG, "Bluetooth controller initialize failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(DEVICE_NAME, "Bluetooth controller initialize failed: %s", esp_err_to_name(ret));
         return;
     }
 
     // Enable the BT controller
     ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
     if(ret) {
-        ESP_LOGE(TAG, "Bluetooth controller enable failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(DEVICE_NAME, "Bluetooth controller enable failed: %s", esp_err_to_name(ret));
         return;
     }
 
@@ -1066,7 +767,7 @@ void init_ble()
         ret = esp_bluedroid_init();
 
         if (ret) {
-            ESP_LOGE(TAG, "Bluedroid stack initialize failed: %s", esp_err_to_name(ret));
+            ESP_LOGE(DEVICE_NAME, "Bluedroid stack initialize failed: %s", esp_err_to_name(ret));
             return;
         }
     } 
@@ -1075,16 +776,16 @@ void init_ble()
     if(esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED){
     ret = esp_bluedroid_enable();
     if (ret) {
-        ESP_LOGE(TAG, "Bluedroid stack enable failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(DEVICE_NAME, "Bluedroid stack enable failed: %s", esp_err_to_name(ret));
         return;
         }
     } 
     
 
     // Register the gatt server
-    ret = esp_ble_gatts_register_callback(gatts_event_handler);
+    ret = esp_ble_gatts_register_callback(ble_gatts_event_handler);
     if (ret){
-        ESP_LOGE(TAG, "%s gatts register failed, error code = %x", __func__, ret);
+        ESP_LOGE(DEVICE_NAME, "%s gatts register failed, error code = %x", __func__, ret);
         return;
     }
 
@@ -1092,14 +793,7 @@ void init_ble()
     ret = esp_ble_gap_register_callback(gap_event_handler);
     ESP_ERROR_CHECK(ret);
     if (ret){
-        ESP_LOGE(TAG, "%s gap register failed, error code = %x", __func__, ret);
-        return;
-    }
-
-    //Register the application ID
-    ret = esp_ble_gatts_app_register(PROFILE_A_APP_ID); 
-    if (ret){
-        ESP_LOGE(TAG, "%s gatts app register failed, error code = %x", __func__, ret);
+        ESP_LOGE(DEVICE_NAME, "%s gap register failed, error code = %x", __func__, ret);
         return;
     }
 
@@ -1108,14 +802,14 @@ void init_ble()
     //Kan vara bra att minnas att MTU är 23 bytes som standard 
     esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(512);
     if (local_mtu_ret){
-        ESP_LOGE(TAG, "set local  MTU failed, error code = %x", local_mtu_ret);
+        ESP_LOGE(DEVICE_NAME, "set local  MTU failed, error code = %x", local_mtu_ret);
     }
     
-    ESP_LOGI(TAG, "BLE init complete");
-
-
+    
+    ESP_LOGI(DEVICE_NAME, "BLE init complete");
 
 }
+*/
 
 int read_photo_sensor()
 {
@@ -1160,227 +854,8 @@ void turn_off_led()
     gpio_set_level(LED_PIN, 0);
 }
 
-void example_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param)
-{
-    esp_gatt_status_t status = ESP_GATT_OK;
-    if(param->write.need_rsp)
-    {
-        if(param->write.is_prep)
-        {
-            if(param->write.offset > BUF_MAX_SIZE)
-            {
-                status = ESP_GATT_INVALID_OFFSET;
-            }
-            else if((param->write.offset + param->write.len) > BUF_MAX_SIZE)
-            {
-                status = ESP_GATT_INVALID_ATTR_LEN;
-            }
-            if (status == ESP_GATT_OK && prepare_write_env->prepare_buf == NULL)
-            {
-                prepare_write_env->prepare_buf = (uint8_t *)malloc(BUF_MAX_SIZE);
-                prepare_write_env->prepare_len = 0;
-                if (prepare_write_env->prepare_buf == NULL)
-                {
-                    status = ESP_GATT_NO_RESOURCES;
-                }
-            }
-        
-            esp_gatt_rsp_t *gatt_rsp = (esp_gatt_rsp_t *)malloc(sizeof(esp_gatt_rsp_t));
-            if(gatt_rsp)
-            {
-                gatt_rsp->attr_value.len = param->write.len;
-                gatt_rsp->attr_value.handle = param->write.handle;
-                gatt_rsp->attr_value.offset = param->write.offset;
-                gatt_rsp->attr_value.auth_req = ESP_GATT_AUTH_REQ_NONE;
-                memcpy(gatt_rsp->attr_value.value, param->write.value, param->write.len);
-                esp_err_t response_err = esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, status, gatt_rsp);
-                if (response_err != ESP_OK)
-                {
-                    ESP_LOGE(TAG, "Send response error");
-                }
-                free(gatt_rsp);
-            }
-            else{
-                ESP_LOGE(TAG, "malloc failed, no resource to send response\n");
-                status = ESP_GATT_NO_RESOURCES;
-            }
-            if (status != ESP_GATT_OK)
-            {
-                return;
-            }
-            memcpy(prepare_write_env->prepare_buf + param->write.offset,
-                param->write.value, 
-                param->write.len);
-            prepare_write_env->prepare_len += param->write.len;
-        }
-        else
-        {
-            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, status, NULL);
-        }
-    }
-}
-
-void example_exec_write_event_env(prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param)
-{
-    if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC)
-    {
-        esp_log_buffer_hex(TAG, prepare_write_env->prepare_buf, prepare_write_env->prepare_len);
-    }
-    else
-    {
-        ESP_LOGI(TAG, "ESP_GATT_PREP_WRITE_CANCEL");
-    }
-    if (prepare_write_env->prepare_buf)
-    {
-        free(prepare_write_env->prepare_buf);
-        prepare_write_env->prepare_buf = NULL;
-    }
-    prepare_write_env->prepare_len = 0;
-}
 
 
 
-//54-32-04-01-49-f0
-/*
-    EXTRA FUNCTIONS THAT I MAY WANT TO USE LATER OR IMPLEMENT
-
-    Wi-Fi event handler
-    OSäker om jag behöver denna delen
-    static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) 
-    {
-        if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) 
-        {
-            ESP_LOGI(TAG, "Wi-Fi disconnected, trying to reconnect...");
-            esp_wifi_connect();
-        }   
-        else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) 
-        {
-            ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-            ESP_LOGI(TAG, "Got IP: %s", ip4addr_ntoa(&event->ip_info.ip));
-        }
-    }
-
-    //Komma tllbak till denna senare
-    //extern esp_err_t esp_ble_gap_config_adv_data(esp_ble_adv_data_t *adv_data);
-
-    // Connect to a Wi-Fi network with the specified SSID and password
-    // Lite osäker på om jag behöver denna funktionen
-
-    //void wifi_connect_with_credentials(const char *ssid, const char *password);
-
-    void wifi_connect_with_credentials(const char *ssid, const char *password)
-    {
-        wifi_config_t wifi_config = 
-        {
-            .sta = {
-            .ssid = ""
-            .password = "",
-        },
-    };
-
-    strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());  
-    ESP_ERROR_CHECK(esp_wifi_connect());
 
 
-    }
-
-    
-            case ESP_GATTS_WRITE_EVT:
-            if(param->write.handle == gl_profile_tab[PROFILE_A_APP_ID].char_handle)
-            {
-            
-                char ssid[32] = {0};
-                char password[64] = {0};
-                char received_data[96] = {0};
-
-                //Copy the received data to a local buffer
-                memcpy(received_data, param->write.value, param->write.len);
-
-                //Find the delimiter
-                char *delimiter = strchr(received_data, ':');
-                if (delimiter != NULL)
-                {
-                    
-                    //Extract the SSID
-                    size_t ssid_len = delimiter - received_data;
-                    strncpy(ssid, received_data, ssid_len);
-                    ssid[ssid_len] = '\0'; 
-
-                    //Extract the password
-                    strncpy(password, delimiter + 1, param->write.len - ssid_len - 1);
-                    password[param->write.len - ssid_len - 1] = '\0';
-
-                    //Print the received data
-                    ESP_LOGI(TAG, "Received SSID: %s", ssid);
-                    ESP_LOGI(TAG, "Received password: %s", password);
-
-                    //Connect to the Wi-Fi network
-
-                    //wifi_connect_with_credentials(ssid, password);
-                    
-                    //Kanske jag kan importera credentials till min wifi_connect funktion
-                    
-                    wifi_config_t wifi_config = {
-                        .sta = {
-                            .ssid = ssid,
-                            .password = password,
-                        },
-                    };  
-                    
-                }
-            
-
-    */
-
-/*
- if (gl_profile_tab[PROFILE_A_APP_ID].descr_handle == param->write.handle && param->write.len == 2){
-                        uint16_t descr_value = param->write.value[1]<<8 | param->write.value[0];
-                        if (descr_value == 0x0001){
-                            //Kan strulas här
-                            if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_NOTIFY){
-                                ESP_LOGI(TAG, "notify enable");
-                                uint8_t notify_data[15];
-                                for (int i = 0; i < sizeof(notify_data); ++i)
-                                {
-                                    notify_data[i] = i%0xff;
-                                }
-                                // the size of notify_data[] need less than MTU size
-                                esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
-                                                            gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
-                                                            sizeof(notify_data), 
-                                                            notify_data, false);
-                            }
-                    
-                        }else if(descr_value == 0x0002){
-                            if (gl_profile_tab[PROFILE_A_APP_ID].property & ESP_GATT_CHAR_PROP_BIT_INDICATE){
-                                ESP_LOGI(TAG, "indicate enable");
-                                uint8_t indicate_data[15];
-                                for (int i = 0; i < sizeof(indicate_data); ++i)
-                                {
-                                    indicate_data[i] = i%0xff;
-                                }
-                                // the size of indicate_data[] need less than MTU size
-                                esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, 
-                                                            gl_profile_tab[PROFILE_A_APP_ID].char_handle, 
-                                                            sizeof(indicate_data), 
-                                                            indicate_data, true);
-                            }
-                        }
-                        else if(descr_value == 0x0000)
-                        {
-                            ESP_LOGI(TAG, "notify/indicate disable ");
-                        }
-                        else
-                        {
-                            ESP_LOGE(TAG, "unknown value");
-                        }
-                    }
-                }
-                example_write_event_env(gatts_if, &a_prepare_write_env, param);
-                break;
-*/
