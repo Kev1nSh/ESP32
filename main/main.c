@@ -18,7 +18,6 @@
 #include <unistd.h>
 #include "sdkconfig.h"
 #include "sys/socket.h"
-//#include "esp_event.h"
 #include "esp_log.h"
 #include <stdio.h>
 #include <stdint.h>
@@ -39,7 +38,7 @@
 #include "driver/uart.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
-//#include "esp_gatT_common_api.h"
+#include "esp_gatT_common_api.h"
 #include "esp_gatt_defs.h" 
 #include "esp_gatts_api.h"
 #include "esp_gap_bt_api.h"
@@ -73,7 +72,7 @@
 
 #define GAP "GAP EVENT"
 #define GATT "GATT EVENT"
-#define payload "Message from ESP32"
+#define ESP "Message from ESP32"
 
 #define MAX_CHAR_LEN 128
 
@@ -184,7 +183,7 @@ void add_characteristics(esp_gatt_if_t gatts_if, uint16_t service_handle, charac
 {
 
     esp_err_t res;
-    esp_gatt_char_prop_t char_property = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE;
+    esp_gatt_char_prop_t char_property = ESP_GATT_CHAR_PROP_BIT_WRITE_NR | ESP_GATT_CHAR_PROP_BIT_READ;
     ESP_LOGI(GATT, "Adding characteristic with UUID %x, attr_value length: %d", characteristic->uuid.uuid.uuid16, characteristic->attr_value.attr_len);
 
     //Idk if implement this is necessary
@@ -202,7 +201,6 @@ void add_characteristics(esp_gatt_if_t gatts_if, uint16_t service_handle, charac
     }
     
 }
-
 
 void setup_ble_adv_data()
 {
@@ -323,17 +321,29 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             }
             else
             {
-                ESP_LOGI(DEVICE_NAME, "Value: %s", param->write.value);
+                char temp_value[MAX_CHAR_LEN + 1];
+                memcpy(temp_value, param->write.value, param->write.len);
+                temp_value[param->write.len] = '\0';
+                ESP_LOGI(DEVICE_NAME, "Value: %s", temp_value);
             }
 
             if(param->write.handle == char_ssid_handle)
             {
-                memset(ssid, 0, sizeof(ssid));
-                memcpy(ssid, param->write.value, param->write.len);
+                int err = memset(ssid, 0, sizeof(ssid));
+                /*if (err != 0)
+                {
+                    ESP_LOGE(DEVICE_NAME, "Failed to clear SSID buffer");
+                }
+                
+                int err2 = memcpy(ssid, param->write.value, param->write.len);
+                if (err2 != 0)
+                {
+                    ESP_LOGE(DEVICE_NAME, "Failed to copy SSID to buffer");
+                }
+                */
                 ssid[param->write.len] = '\0';
                 
-                //ESP_LOGI(DEVICE_NAME, "SSID: %s", ssid);
-                printf("SSID recv: %s\n", ssid);
+                ESP_LOGI(DEVICE_NAME, "SSID: %s", ssid);
             }
             else if (param->write.handle == char_pass_handle)
             {
@@ -356,6 +366,11 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             }
             
         break;
+
+        case ESP_GATTS_EXEC_WRITE_EVT:
+            ESP_LOGI(DEVICE_NAME, "Execute write event");
+            ESP_LOGI(DEVICE_NAME, "ssid is: %s", ssid);
+            break;
 
         case ESP_GATTS_ADD_CHAR_EVT:
             if(param->add_char.char_uuid.uuid.uuid16 == CHAR_SSID_UUID)
@@ -406,8 +421,10 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             break;
         
         case ESP_GATTS_DISCONNECT_EVT:
+
             
-            ESP_LOGE(DEVICE_NAME, "Disconnect event");
+            ESP_LOGE(DEVICE_NAME, "Disconnect event, reason: %d", param->disconnect.reason);
+
             esp_err_t ret = esp_ble_gap_start_advertising(&adv_params);
             if (ret)
             {
@@ -425,6 +442,10 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
         
         case ESP_GATTS_SET_ATTR_VAL_EVT:
             ESP_LOGI(DEVICE_NAME, "Set attribute value event");
+            break;
+        
+        case ESP_GATTS_MTU_EVT:
+            ESP_LOGI(DEVICE_NAME, "ESP_GATTS_MTU_EVT, MTU size negotition: %d", param->mtu.mtu);
             break;
 
         default:
@@ -467,141 +488,96 @@ void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             ESP_LOGI(GAP, "Update connection parameters event");
             break;
 
+
         default:
             ESP_LOGI(GAP, "Event %d not handled", event);
             break;
     }
 }       
 
-void credentials_received_task()
-{   
-    printf("Credentials received\n");
-
-    while(1)
-    {
-        if (credentials_received == 1)
-        {
-            //wifi_finish_init();
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            credentials_received = 0;
-        }
-        else
-        {
-            printf("Waiting for credentials\n");
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    
-}
-
-//oid init_ble();
-void init_led();
-void turn_on_led();
-void turn_off_led();
-void tcp_client(void *pvParameters);
-int read_photo_sensor();
-void wifi_connect();
-
-
-void app_main(void)
+void mac_address(int sock)
 {
-
-    init_characteristics();
-
-    init_led();
-
-    // Initilize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
+    uint8_t mac_addr[6];
+    esp_err_t ret = esp_wifi_get_mac(ESP_IF_WIFI_STA, mac_addr);
+    if(ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to get MAC address: %s", esp_err_to_name(ret));
+        return;
     }
-    ESP_ERROR_CHECK(ret);
-
-    wifi_connect(); 
-    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
-    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
-    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
-    ESP_ERROR_CHECK(esp_bluedroid_init());
-    ESP_ERROR_CHECK(esp_bluedroid_enable());
-    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(ble_gatts_event_handler));
-    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
-    esp_ble_gatts_app_register(0);
     
-    esp_ble_gap_set_device_name(DEVICE_NAME);
-
-    setup_ble_adv_data();
-    esp_ble_gap_start_advertising(&adv_params);
-    
-    ESP_LOGI(DEVICE_NAME, "BLE init complete");
-    //init_ble();
-
-
-    //xTaskCreate(tcp_client, "tcp_client", 4096, NULL, 5, NULL);
-
-    
+    int err = send(sock, mac_addr, sizeof(mac_addr), 0);
+    if (err < 0)
+    {
+        ESP_LOGE(TCP_TAG, "Error occurred during sending: errno %d", errno);
+    }
+    else
+    {
+        ESP_LOGI(TCP_TAG, "MAC address sent");
+    }
 
 }
+
+int read_photo_sensor();
 
 void tcp_client(void *pvParameters)
 {
-
-    char rx_buffer[20];
-    char tx_buffer[100];
-
-    uint8_t mac_addr[6];
-    esp_read_mac(mac_addr, ESP_MAC_WIFI_STA);
-
-    char mac_str[18];
-    sprintf(mac_str, "%02x:%02x:%02x:%02x:%02x:%02x", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
     
-
-    char host_ip[] = SERVER_IP;
+    char adr_str[128];
     int addr_family = AF_INET;
     int ip_protocol = IPPROTO_IP;
+    char host_ip[] = SERVER_IP;
+    
+    char rx_buffer[20];
+    char tx_buffer[100];
+    
 
-
+    
     struct sockaddr_in dest_addr;
     {
-        dest_addr.sin_addr.s_addr = inet_addr(host_ip);
+        dest_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
         dest_addr.sin_family = addr_family;
         dest_addr.sin_port = htons(PORT);
     };
     
-
     while (1)
     {
+
+
+        dest_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+        dest_addr.sin_family = addr_family;
+        dest_addr.sin_port = htons(PORT);
+        inet_ntoa_r(dest_addr.sin_addr, adr_str, sizeof(adr_str) - 1);
 
         // Skapa socket
         int sock = socket(addr_family, SOCK_STREAM, ip_protocol);
         if (sock < 0){
 
             ESP_LOGE(TCP_TAG, "Unable to create socket: errno %d", errno);
-            break;
-
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
+            continue;
         }
 
-        ESP_LOGI(TCP_TAG, "Socket created, connecting to %s:%d", host_ip, PORT);
+        ESP_LOGI(TCP_TAG, "Socket created, connecting to %s:%d", SERVER_IP, PORT);
 
         // Anslut till server
-        
         int err = connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
         if(err != 0)
         {
             ESP_LOGE(TCP_TAG, "Socket unable to connect: errno %d", errno);
             close(sock);
-            break;
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
+            continue;
         }
 
-        
         ESP_LOGI(TCP_TAG, "Successfully connected");
-
+        mac_address(sock);
         
         while(1)
         {
             // Read sensor value
             int sensor_value = read_photo_sensor();
+            char payload[100];
+
             sprintf(tx_buffer, "Sensor value: %d", sensor_value);
 
             // Skicka data
@@ -610,6 +586,10 @@ void tcp_client(void *pvParameters)
             {
                 ESP_LOGE(TCP_TAG, "Error occurred during sending: errno %d", errno);
                 break;
+            }
+            else
+            {
+                ESP_LOGI(TCP_TAG, "Message sent: %s", payload);
             }
 
             // Ta emot data
@@ -639,177 +619,85 @@ void tcp_client(void *pvParameters)
                 }
 
             }
-
-
-
         }
 
-        if (sock != -1) {
-            ESP_LOGE(TCP_TAG, "Shutting down socket and restarting...");
-            shutdown(sock, 0);
-            close(sock);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
+      
+        ESP_LOGE(TCP_TAG, "Shutting down socket and restarting...");
+        shutdown(sock, 0); //Osäker på om detta är rätt
+        close(sock);
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
         
     }
-    
-    vTaskDelete(NULL);
-
 }
 
-void wifi_connect() 
+static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+{
+
+    if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
+    {
+
+        esp_wifi_connect();
+        ESP_LOGI(TAG, "Connecting to WiFi...");
+
+    }
+    else if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+    {
+
+        ESP_LOGI(TAG, "Disconnected from WiFi");
+        ESP_LOGI(TAG, "Reconnecting...");
+        esp_wifi_connect();
+
+    }
+    else if(event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+    {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        char ip_address[16];
+        esp_ip4addr_ntoa(&event->ip_info.ip, ip_address, sizeof(ip_address));
+        ESP_LOGI(TAG, "Got IP: %s", ip_address);
+    }
+}
+
+void wifi_start() 
 {
 
     // Initiera nätverksgränssnitt
     ESP_ERROR_CHECK(esp_netif_init());
+
     // Skapa händelseloop
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    // Initialisera WiFi med standardkonfiguration
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    // Skapa standard WiFi STA gränssnitt
+    // Skapa standard WiFi STA-gränssnitt
     esp_netif_t *netif = esp_netif_create_default_wifi_sta();
     if (netif == NULL) {
         ESP_LOGE(TAG, "Failed to create default WiFi STA interface");
         return;
     }
+    // Initialisera WiFi med standardkonfiguration
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    // Skapa händelsgrupp för att hantera olika händelser
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+}
+
+void wifi_init()
+{
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
+            .ssid = "",
+            .password = "",
         },
     };
+    strcpy((char *)wifi_config.sta.ssid, ssid);
+    strcpy((char *)wifi_config.sta.password, pass);
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_LOGI(TAG, "WiFi configuration set, now starting WiFi...");
     ESP_ERROR_CHECK(esp_wifi_start());
-
-
-    ESP_LOGI(TAG, "Connecting to WiFi...");
-    ESP_LOGI(TAG, "connect to ap SSID:%s password:%s", WIFI_SSID, WIFI_PASS);
-    ESP_ERROR_CHECK(esp_wifi_connect());
-
-
-    // Vänta på att få en IP-adress 
-    // Osäker om jag behöver denna delen
-    esp_netif_ip_info_t ip_info;
-    while (true) {
-        esp_netif_get_ip_info(netif, &ip_info);
-        if (ip_info.ip.addr != 0) {
-            ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ip_info.ip));
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
 }
-/*
-void init_ble()
-{
-    esp_err_t ret;
-
-    //Check if the BT controller is already enabled and disable it if it is
-    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
-    ESP_LOGI(DEVICE_NAME, "Bluetooth controller already enabled, disabling first");
-    ret = esp_bt_controller_disable();
-    if (ret) {
-        ESP_LOGE(DEVICE_NAME, "Bluetooth controller disable failed: %s", esp_err_to_name(ret));
-        return;
-    }
-    ret = esp_bt_controller_deinit();
-    if (ret) {
-        ESP_LOGE(DEVICE_NAME, "Bluetooth controller deinitialize failed: %s", esp_err_to_name(ret));
-        return;
-    }
-    }   
-    
-    //Check if the bluedroid stack is already enabled and disable it if it is
-    if(esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED){
-
-        ESP_LOGI(DEVICE_NAME, "Bluedroid stack already enabled, disabling first");
-        ret = esp_bluedroid_disable();
-        if (ret) {
-            ESP_LOGE(DEVICE_NAME, "Bluedroid stack disable failed: %s", esp_err_to_name(ret));
-            return;
-        }
-    }
-    //Check if the bluedroid stack is already initialized and deinitialize it if it is
-    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED){
-
-        ESP_LOGI(DEVICE_NAME, "Bluedroid stack already initialized, deinitializing first");
-        ret = esp_bluedroid_deinit();
-        if (ret) {
-            ESP_LOGE(DEVICE_NAME, "Bluedroid stack deinitialize failed: %s", esp_err_to_name(ret));
-            return;
-        }
-
-    }
-
-    // Initilize the BT controller
-    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    ret = esp_bt_controller_init(&bt_cfg);
-    if (ret) {
-        ESP_LOGE(DEVICE_NAME, "Bluetooth controller initialize failed: %s", esp_err_to_name(ret));
-        return;
-    }
-
-    // Enable the BT controller
-    ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
-    if(ret) {
-        ESP_LOGE(DEVICE_NAME, "Bluetooth controller enable failed: %s", esp_err_to_name(ret));
-        return;
-    }
-
-    // Check if the bluedroid stack is already uninitialized and initialize it if it is
-    if(esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED){
-        ret = esp_bluedroid_init();
-
-        if (ret) {
-            ESP_LOGE(DEVICE_NAME, "Bluedroid stack initialize failed: %s", esp_err_to_name(ret));
-            return;
-        }
-    } 
-    
-    //Check if the bluedroid stack is already enabled and enable it if it don't
-    if(esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED){
-    ret = esp_bluedroid_enable();
-    if (ret) {
-        ESP_LOGE(DEVICE_NAME, "Bluedroid stack enable failed: %s", esp_err_to_name(ret));
-        return;
-        }
-    } 
-    
-
-    // Register the gatt server
-    ret = esp_ble_gatts_register_callback(ble_gatts_event_handler);
-    if (ret){
-        ESP_LOGE(DEVICE_NAME, "%s gatts register failed, error code = %x", __func__, ret);
-        return;
-    }
-
-    // Register the GAP callback 
-    ret = esp_ble_gap_register_callback(gap_event_handler);
-    ESP_ERROR_CHECK(ret);
-    if (ret){
-        ESP_LOGE(DEVICE_NAME, "%s gap register failed, error code = %x", __func__, ret);
-        return;
-    }
-
-    // Set the local MTU size
-     //MTU = Maximum Transmission Unit alltså max storlek på en paket
-    //Kan vara bra att minnas att MTU är 23 bytes som standard 
-    esp_err_t local_mtu_ret = esp_ble_gatt_set_local_mtu(512);
-    if (local_mtu_ret){
-        ESP_LOGE(DEVICE_NAME, "set local  MTU failed, error code = %x", local_mtu_ret);
-    }
-    
-    
-    ESP_LOGI(DEVICE_NAME, "BLE init complete");
-
-}
-*/
 
 int read_photo_sensor()
 {
@@ -853,6 +741,72 @@ void turn_off_led()
 {
     gpio_set_level(LED_PIN, 0);
 }
+
+void credentials_received_task()
+{   
+    printf("Credentials received\n");
+
+    while(1)
+    {
+        if (credentials_received == 1)
+        {
+            wifi_init();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            credentials_received = 0;
+        }
+        else
+        {
+            printf("Waiting for credentials\n");
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    
+}
+
+
+void app_main(void)
+{
+
+    init_characteristics();
+
+    init_led();
+
+    // Initilize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    
+    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
+    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
+    ESP_ERROR_CHECK(esp_bluedroid_init());
+    ESP_ERROR_CHECK(esp_bluedroid_enable());
+    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(ble_gatts_event_handler));
+    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
+    esp_ble_gatts_app_register(0);
+    esp_ble_gatt_set_local_mtu(500);
+    
+    esp_ble_gap_set_device_name(DEVICE_NAME);
+
+    setup_ble_adv_data();
+    esp_ble_gap_start_advertising(&adv_params);
+    
+    ESP_LOGI(DEVICE_NAME, "BLE init complete");
+
+    wifi_start(); 
+    
+
+    xTaskCreate(&credentials_received_task, "tcp_client", 4096, NULL, 5, NULL);
+
+    
+
+}
+
 
 
 
