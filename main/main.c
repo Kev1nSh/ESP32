@@ -314,36 +314,12 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             ESP_LOGI(DEVICE_NAME, "Write event, handle: %d, value len: %d, value :", param->write.handle, param->write.len);
             esp_log_buffer_hex(DEVICE_NAME, param->write.value, param->write.len); 
 
-            if(param->write.len > MAX_CHAR_LEN)
-            {
-                ESP_LOGE(DEVICE_NAME, "Data exceeds maximum length");
-                return;
-            }
-            else
-            {
-                char temp_value[MAX_CHAR_LEN + 1];
-                memcpy(temp_value, param->write.value, param->write.len);
-                temp_value[param->write.len] = '\0';
-                ESP_LOGI(DEVICE_NAME, "Value: %s", temp_value);
-            }
-
             if(param->write.handle == char_ssid_handle)
             {
                 int err = memset(ssid, 0, sizeof(ssid));
-                /*if (err != 0)
-                {
-                    ESP_LOGE(DEVICE_NAME, "Failed to clear SSID buffer");
-                }
-                
-                int err2 = memcpy(ssid, param->write.value, param->write.len);
-                if (err2 != 0)
-                {
-                    ESP_LOGE(DEVICE_NAME, "Failed to copy SSID to buffer");
-                }
-                */
                 ssid[param->write.len] = '\0';
-                
-                ESP_LOGI(DEVICE_NAME, "SSID: %s", ssid);
+                printf("SSID recv: %.*s\n", param->write.len, param->write.value);
+                //ESP_LOGI(DEVICE_NAME, "SSID: %s", ssid);
             }
             else if (param->write.handle == char_pass_handle)
             {
@@ -369,7 +345,6 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
 
         case ESP_GATTS_EXEC_WRITE_EVT:
             ESP_LOGI(DEVICE_NAME, "Execute write event");
-            ESP_LOGI(DEVICE_NAME, "ssid is: %s", ssid);
             break;
 
         case ESP_GATTS_ADD_CHAR_EVT:
@@ -697,6 +672,7 @@ void wifi_init()
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
     ESP_LOGI(TAG, "WiFi configuration set, now starting WiFi...");
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "WiFi started");
 }
 
 int read_photo_sensor()
