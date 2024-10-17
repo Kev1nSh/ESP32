@@ -54,16 +54,16 @@
 #define TAG "Wifi Station"
 #define WIFI_SSID "AuPx-Wifi-2.4"
 #define WIFI_PASS "AuPx-HIF"
-#define SERVER_IP "192.168.10.74"
+#define SERVER_IP "192.168.10.148"
 #define PORT 1256
-
 
 #define TCP_TAG "TCP_CLIENT"
 #define BINDOPERATION 1
 #define BROADCASTOPERATION 2
 #define TCP_SOCKET 2
+//#define TCP_PORT 8080
 
-#define LED_PIN 22 //Måste ändras sen
+#define LED_PIN 3 //Måste ändras sen
 
 #define SERVICE_UUID 0x1222
 #define CHAR_SSID_UUID 0x1223
@@ -75,22 +75,19 @@
 #define ESP "Message from ESP32"
 
 #define MAX_CHAR_LEN 128
-
+#define MAX_RAW_VALUE 4095
+#define MAX_SCALE_VALUE 100
 #define ESP_GATT_UUID_CHAR_DESCRIPTION 0x2901
-
 
 static uint16_t service_handle = 0;
 static uint16_t char_ssid_handle = 0;
 static uint16_t char_pass_handle = 0;
 static uint16_t char_ip_handle = 0;
 
-
 static char ssid[64] = "Default SSID";
 static char pass[64] = "Default Password";
 static char ip[64] = "Default IP";
-
-static int credentials_received = 0;
-
+static int password_received = 0;
 
 typedef struct 
 {
@@ -101,7 +98,6 @@ typedef struct
 static characteristic_t char_ssid;
 static characteristic_t char_pass;
 static characteristic_t char_ip;
-
 
 static esp_ble_adv_params_t adv_params = {
     .adv_int_min = 0x20,
@@ -153,7 +149,7 @@ void init_characteristics()
 
 }
 
-void create_ble_service(esp_gatt_if_t gatts_if)
+void ble_service(esp_gatt_if_t gatts_if)
 {
 
     esp_err_t res;
@@ -179,7 +175,7 @@ void create_ble_service(esp_gatt_if_t gatts_if)
     }
 }
 
-void add_characteristics(esp_gatt_if_t gatts_if, uint16_t service_handle, characteristic_t *characteristic)
+void characteristics(esp_gatt_if_t gatts_if, uint16_t service_handle, characteristic_t *characteristic)
 {
 
     esp_err_t res;
@@ -202,7 +198,7 @@ void add_characteristics(esp_gatt_if_t gatts_if, uint16_t service_handle, charac
     
 }
 
-void setup_ble_adv_data()
+void ble_adv_data()
 {
 
     uint8_t service_uuid [16] = {0};
@@ -230,7 +226,7 @@ void setup_ble_adv_data()
     esp_ble_gap_config_adv_data(&adv_data);
 }
 
-void add_descriptor(esp_gatt_if_t gatts_if, uint16_t service_handle, const char *description)
+void descriptor(esp_gatt_if_t gatts_if, uint16_t service_handle, const char *description)
 {
 
     esp_err_t res;
@@ -255,7 +251,7 @@ void add_descriptor(esp_gatt_if_t gatts_if, uint16_t service_handle, const char 
     }
 }
 
-void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
+void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
 
     switch(event)
@@ -263,7 +259,7 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
 
         case ESP_GATTS_REG_EVT:
             ESP_LOGI(DEVICE_NAME, "Register event");
-            create_ble_service(gatts_if);
+            ble_service(gatts_if);
             break;
             
         case ESP_GATTS_READ_EVT:
@@ -316,7 +312,8 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
 
             if(param->write.handle == char_ssid_handle)
             {
-                int err = memset(ssid, 0, sizeof(ssid));
+                memset(ssid, 0, sizeof(ssid));
+                memcpy(ssid, param->write.value, param->write.len);
                 ssid[param->write.len] = '\0';
                 printf("SSID recv: %.*s\n", param->write.len, param->write.value);
                 //ESP_LOGI(DEVICE_NAME, "SSID: %s", ssid);
@@ -330,7 +327,7 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                 //ESP_LOGI(DEVICE_NAME, "Password: %s", pass);
                 printf("Password recv: %.*s\n", param->write.len, param->write.value);
 
-                credentials_received = 1;
+                password_received = 1;
             }
             else if (param->write.handle == char_ip_handle)
             {
@@ -378,9 +375,9 @@ void ble_gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                 return;
             }
             
-            add_characteristics(gatts_if, service_handle, &char_ssid);
-            add_characteristics(gatts_if, service_handle, &char_pass);
-            add_characteristics(gatts_if, service_handle, &char_ip);
+            characteristics(gatts_if, service_handle, &char_ssid);
+            characteristics(gatts_if, service_handle, &char_pass);
+            characteristics(gatts_if, service_handle, &char_ip);
 
             ESP_LOGI(DEVICE_NAME, "Service created with handle: %d and status: %d", param->create.service_handle, param->create.status);
             ESP_ERROR_CHECK(esp_ble_gatts_start_service(service_handle));    
@@ -479,20 +476,31 @@ void mac_address(int sock)
         ESP_LOGE(TAG, "Failed to get MAC address: %s", esp_err_to_name(ret));
         return;
     }
+
     
-    int err = send(sock, mac_addr, sizeof(mac_addr), 0);
+    char mac_str[100];
+    snprintf(mac_str, sizeof(mac_str), "MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+             mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+    
+    ESP_LOGI(TCP_TAG, "Formatted MAC address: %s", mac_str);
+    
+
+    int err = send(sock, mac_str, sizeof(mac_str), 0);
     if (err < 0)
     {
         ESP_LOGE(TCP_TAG, "Error occurred during sending: errno %d", errno);
     }
     else
     {
-        ESP_LOGI(TCP_TAG, "MAC address sent");
+        ESP_LOGI(TCP_TAG, "MAC address sent: %s", mac_str);
     }
 
 }
 
 int read_photo_sensor();
+void init_led();
+void turn_on_led();
+void turn_off_led();
 
 void tcp_client(void *pvParameters)
 {
@@ -500,7 +508,7 @@ void tcp_client(void *pvParameters)
     char adr_str[128];
     int addr_family = AF_INET;
     int ip_protocol = IPPROTO_IP;
-    char host_ip[] = SERVER_IP;
+    //char host_ip[] = SERVER_IP;
     
     char rx_buffer[20];
     char tx_buffer[100];
@@ -517,10 +525,12 @@ void tcp_client(void *pvParameters)
     while (1)
     {
 
+        /*
+            dest_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+            dest_addr.sin_family = addr_family;
+            dest_addr.sin_port = htons(PORT);
+        */
 
-        dest_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
-        dest_addr.sin_family = addr_family;
-        dest_addr.sin_port = htons(PORT);
         inet_ntoa_r(dest_addr.sin_addr, adr_str, sizeof(adr_str) - 1);
 
         // Skapa socket
@@ -547,16 +557,20 @@ void tcp_client(void *pvParameters)
         ESP_LOGI(TCP_TAG, "Successfully connected");
         mac_address(sock);
         
+        
+
+        // Här börjar loopen för sensor, LED och dess value
         while(1)
         {
             // Read sensor value
-            int sensor_value = read_photo_sensor();
-            char payload[100];
+            int raw_value = read_photo_sensor();
+            int sensor_value = (raw_value * MAX_SCALE_VALUE) / MAX_RAW_VALUE; //Scale value to 0-100
 
-            sprintf(tx_buffer, "Sensor value: %d", sensor_value);
+            char message[100];
+            snprintf(message, sizeof(message), "Sensor value: %d\n", sensor_value);
 
             // Skicka data
-            int err = send(sock, payload, strlen(payload), 0);
+            int err = send(sock, message, strlen(message), 0);
             if (err < 0)
             {
                 ESP_LOGE(TCP_TAG, "Error occurred during sending: errno %d", errno);
@@ -564,39 +578,33 @@ void tcp_client(void *pvParameters)
             }
             else
             {
-                ESP_LOGI(TCP_TAG, "Message sent: %s", payload);
+                ESP_LOGI(TCP_TAG, "Message sent: %s", message);
             }
 
             // Ta emot data
             int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
-            if (len < 0) {
+            if (len > 0) {
 
-                ESP_LOGE(TCP_TAG, "recv failed: errno %d", errno);
-                break;
-
-            }
-
-            else {
-                
-                rx_buffer[len] = 0; // Null-terminera mottaget meddelande
-                ESP_LOGI(TCP_TAG, "Received %d bytes: %s", len, rx_buffer);
-                
-                //ESP_LOGI(TAG2, "%s", rx_buffer);
-                
+                rx_buffer[len] = 0;
+                ESP_LOGI(TCP_TAG, "Received: %s", rx_buffer);
                 if(strcmp(rx_buffer, "TURN_ON_LED") == 0)
                 {
-                  //Code to turn on LED   
+                    turn_on_led();
                 }
-
-                if (strcmp(rx_buffer, "TURN_OFF_LED") == 0)
+                else if(strcmp(rx_buffer, "TURN_OFF_LED") == 0)
                 {
-                  //Code to turn off LED
+                    turn_off_led();
                 }
-
             }
+
+            else if(len < 0)
+            {
+                ESP_LOGE(TCP_TAG, "Error occurred during receiving: errno %d", errno);
+                break;
+            }
+
         }
 
-      
         ESP_LOGE(TCP_TAG, "Shutting down socket and restarting...");
         shutdown(sock, 0); //Osäker på om detta är rätt
         close(sock);
@@ -610,18 +618,14 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
 
     if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
-
         esp_wifi_connect();
         ESP_LOGI(TAG, "Connecting to WiFi...");
-
     }
     else if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
-
         ESP_LOGI(TAG, "Disconnected from WiFi");
         ESP_LOGI(TAG, "Reconnecting...");
         esp_wifi_connect();
-
     }
     else if(event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
@@ -691,10 +695,10 @@ int read_photo_sensor()
         .atten = ADC_ATTEN_DB_0,
     };
 
-    adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL_0, &config);
+    adc_oneshot_config_channel(adc1_handle, ADC1_CHANNEL_2, &config);
 
     int adc_raw;
-    adc_oneshot_read(adc1_handle, ADC_CHANNEL_0, &adc_raw);
+    adc_oneshot_read(adc1_handle, ADC1_CHANNEL_2, &adc_raw);
 
     adc_oneshot_del_unit(adc1_handle);
 
@@ -704,7 +708,7 @@ int read_photo_sensor()
 
 void init_led()
 {
-    gpio_reset_pin(LED_PIN);
+    //gpio_pad_select_gpio(LED_PIN);
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
 }
 
@@ -718,34 +722,54 @@ void turn_off_led()
     gpio_set_level(LED_PIN, 0);
 }
 
-void credentials_received_task()
+void wifi_login()
 {   
-    printf("Credentials received\n");
+    printf("Login info received\n");
 
     while(1)
     {
-        if (credentials_received == 1)
+        if (password_received == 1)
         {
             wifi_init();
             vTaskDelay(pdMS_TO_TICKS(1000));
-            credentials_received = 0;
+            password_received = 0;
         }
         else
         {
-            printf("Waiting for credentials\n");
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
     
 }
 
-
 void app_main(void)
 {
+
 
     init_characteristics();
 
     init_led();
+    /*
+    while(1)
+    {   
+        
+        int raw_value = read_photo_sensor();
+        int scale_value = (raw_value * MAX_SCALE_VALUE) / MAX_RAW_VALUE; //Scale value to 0-100
+        printf("Raw value: %d, sensor value: %d\n", raw_value, scale_value);
+        if (scale_value < 50)
+        {
+            turn_on_led();
+        }
+        else
+        {
+            turn_off_led();
+        }
+        //Implementera sätt och skicka value till go servern.
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+
+    }
+   */
 
     // Initilize NVS
     esp_err_t ret = nvs_flash_init();
@@ -762,25 +786,26 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
     ESP_ERROR_CHECK(esp_bluedroid_init());
     ESP_ERROR_CHECK(esp_bluedroid_enable());
-    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(ble_gatts_event_handler));
+    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
     ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
     esp_ble_gatts_app_register(0);
     esp_ble_gatt_set_local_mtu(500);
     
     esp_ble_gap_set_device_name(DEVICE_NAME);
 
-    setup_ble_adv_data();
+    ble_adv_data();
     esp_ble_gap_start_advertising(&adv_params);
     
     ESP_LOGI(DEVICE_NAME, "BLE init complete");
 
     wifi_start(); 
     
-
-    xTaskCreate(&credentials_received_task, "tcp_client", 4096, NULL, 5, NULL);
-
     
 
+    xTaskCreate(&wifi_login, TAG , 4096, NULL, 5, NULL);
+
+    xTaskCreate(&tcp_client, TCP_TAG, 4096, NULL, 5, NULL);
+    
 }
 
 
